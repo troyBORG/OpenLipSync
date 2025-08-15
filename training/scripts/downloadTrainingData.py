@@ -26,6 +26,9 @@ DATASETS: Dict[str, Dict[str, str]] = {
     "test-clean": {
         "filename": "test-clean.tar.gz",
     },
+    "dev-clean": {
+        "filename": "dev-clean.tar.gz",
+    },
     "train-clean-100": {
         "filename": "train-clean-100.tar.gz",
     },
