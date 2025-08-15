@@ -809,4 +809,4 @@ if __name__ == "__main__":
     print(f"Batch lengths: {batch['lengths'][:5]}...")  # Show first 5
     print(f"Sample speaker IDs: {batch['speaker_ids'][:3]}")
     
-    print("✅ Data pipeline test completed successfully!")
+    print("Data pipeline test completed successfully.")

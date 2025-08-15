@@ -410,7 +410,7 @@ Examples:
         total_files += total
         
         if successful == total:
-            logger.info(f"✓ Successfully processed {subset}: {successful}/{total} files")
+            logger.info(f"Successfully processed {subset}: {successful}/{total} files")
         else:
             logger.warning(f"⚠ Partially processed {subset}: {successful}/{total} files")
 
@@ -419,13 +419,13 @@ Examples:
     logger.info(f"Conversion complete: {total_successful}/{total_files} files successful")
     
     if total_successful == total_files:
-        logger.info("🎉 All files converted successfully!")
+        logger.info("All files converted successfully.")
         logger.info(f"Prepared datasets ready at: {prepared_dir}")
         logger.info("\nNext steps:")
         logger.info("1. Run MFA alignment on the prepared datasets")
         logger.info("2. Start training with: python training/train.py --config training/recipes/tcn_config.toml")
     elif total_successful == 0:
-        logger.error("❌ No files were converted successfully.")
+        logger.error("No files were converted successfully.")
         sys.exit(1)
     else:
         logger.warning(f"⚠ {total_files - total_successful} files failed to convert.")

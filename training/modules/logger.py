@@ -1,8 +1,6 @@
 """
-Logging and TensorBoard Integration for OpenLipSync TCN Training
-
-Provides comprehensive logging functionality including TensorBoard integration,
-experiment tracking, and progress monitoring.
+Logging and TensorBoard integration for OpenLipSync TCN training.
+Includes console/file logging and optional TensorBoard writers.
 """
 
 import os
@@ -22,8 +20,8 @@ from .config import TrainingConfiguration
 
 class TrainingLogger:
     """
-    Comprehensive logging system for training progress, metrics, and debugging.
-    Handles both console output and file logging with configurable verbosity.
+    Logging for training progress, metrics, and debugging.
+    Outputs to console and files with configurable verbosity.
     """
     
     def __init__(self, config: TrainingConfiguration, log_dir: Optional[Path] = None):
@@ -225,7 +223,7 @@ class TrainingLogger:
     
     def log_best_model(self, epoch: int, metric_name: str, metric_value: float):
         """Log when a new best model is found"""
-        self.info(f"🏆 New best model at epoch {epoch + 1}! {metric_name}: {metric_value:.4f}")
+        self.info(f"New best model at epoch {epoch + 1}: {metric_name}={metric_value:.4f}")
     
     def log_early_stopping(self, epoch: int, patience_counter: int, patience: int):
         """Log early stopping information"""
@@ -554,7 +552,7 @@ class TensorBoardLogger:
 
 class CombinedLogger:
     """
-    Combines TrainingLogger and TensorBoardLogger for comprehensive logging.
+    Combines TrainingLogger and TensorBoardLogger for logging.
     """
     
     def __init__(self, config: TrainingConfiguration, log_dir: Optional[Path] = None):
@@ -730,7 +728,7 @@ if __name__ == "__main__":
     logger.log_epoch_metrics(0, 5, train_metrics, val_metrics, 30.0)
     logger.log_best_model(0, 'val_loss', 0.6)
     
-    logger.info("✅ Logger test completed successfully!")
+    logger.info("Logger test completed successfully.")
     
     # Close loggers
     logger.close()

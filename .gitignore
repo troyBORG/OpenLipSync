@@ -213,3 +213,4 @@ training/runs/
 
 #Vscode
 .vscode/
+*.mdc

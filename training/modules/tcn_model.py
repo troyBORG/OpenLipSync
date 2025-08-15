@@ -478,8 +478,8 @@ if __name__ == "__main__":
     print(f"Real-time factor: {rtf:.3f}")
     
     if rtf < 1.0:
-        print("✅ Model can run faster than real-time!")
+        print("Model can run faster than real-time.")
     else:
-        print("⚠️ Model may struggle with real-time processing")
+        print("Model may struggle with real-time processing.")
     
-    print("✅ TCN model test completed successfully!")
+    print("TCN model test completed successfully.")

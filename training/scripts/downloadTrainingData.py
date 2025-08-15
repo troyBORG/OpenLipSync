@@ -161,10 +161,10 @@ def verify_checksum(file_path: Path, expected_md5: str) -> bool:
         return False
         
     if actual_md5.lower() == expected_md5.lower():
-        logger.info("✓ Checksum verification passed")
+        logger.info("Checksum verification passed")
         return True
     else:
-        logger.error(f"✗ Checksum mismatch! Expected: {expected_md5}, Got: {actual_md5}")
+        logger.error(f"Checksum mismatch: expected {expected_md5}, got {actual_md5}")
         return False
 
 
@@ -450,7 +450,7 @@ Examples:
     if not args.skip_checksum:
         checksums = download_md5_checksums(downloads_dir)
         if not checksums:
-            logger.warning("⚠️  Proceeding without checksum verification")
+            logger.warning("Proceeding without checksum verification")
 
     # Process each dataset
     success_count = 0

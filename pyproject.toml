@@ -15,3 +15,9 @@ dependencies = [
     "matplotlib",
     "torchcodec>=0.6.0",
 ]
+
+[project.optional-dependencies]
+gui = [
+    "streamlit",
+    "plotly",
+]

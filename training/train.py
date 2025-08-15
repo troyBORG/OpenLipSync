@@ -10,7 +10,7 @@ Usage:
     
 Features:
     - Configuration-driven training
-    - Comprehensive logging and monitoring
+    - Logging and monitoring
     - Automatic checkpointing and resuming
     - Real-time metrics and TensorBoard integration
     - Early stopping and best model saving
@@ -44,7 +44,7 @@ class TCNTrainer:
     Main trainer class that orchestrates the TCN training process.
     
     Handles training loop, validation, checkpointing, and logging with
-    comprehensive error handling and progress monitoring.
+    clear error handling and progress monitoring.
     """
     
     def __init__(self, config: TrainingConfiguration, resume_from: Optional[str] = None, data_root: Optional[str] = None):
@@ -483,9 +483,9 @@ class TCNTrainer:
             self.logger.info(f"Real-time factor: {rtf:.3f}")
             
             if rtf < 1.0:
-                self.logger.info("✅ Model can run faster than real-time!")
+                self.logger.info("Model can run faster than real-time.")
             else:
-                self.logger.warning("⚠️ Model may struggle with real-time processing")
+                self.logger.warning("Model may struggle with real-time processing.")
         
         return final_test_metrics
 
@@ -549,7 +549,7 @@ def main():
         config = load_config(args.config)
         validate_environment(config)
     except Exception as error:
-        print(f"❌ Configuration error: {error}")
+        print(f"Configuration error: {error}")
         sys.exit(1)
     
     # Set data root if specified
@@ -564,11 +564,11 @@ def main():
         if args.test_only:
             # Test only mode
             if not args.resume:
-                print("❌ --test-only requires --resume to specify model checkpoint")
+                print("--test-only requires --resume to specify model checkpoint")
                 sys.exit(1)
             
             test_metrics = trainer.test()
-            print("✅ Test evaluation completed!")
+            print("Test evaluation completed.")
         
         else:
             # Full training mode
@@ -576,10 +576,10 @@ def main():
             
             # Run test evaluation after training
             test_metrics = trainer.test()
-            print("✅ Training and testing completed!")
+            print("Training and testing completed.")
     
     except Exception as error:
-        print(f"❌ Training failed: {error}")
+        print(f"Training failed: {error}")
         sys.exit(1)
 
 

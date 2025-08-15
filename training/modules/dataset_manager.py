@@ -138,7 +138,7 @@ class DatasetManager:
             status = availability[dataset]
             
             if status["prepared"]:
-                logger.info(f"✓ Dataset {dataset} is ready")
+                logger.info(f"Dataset {dataset} is ready")
             elif status["aligned"]:
                 logger.info(f"⚠ Dataset {dataset} needs final preparation (has alignment)")
                 needs_preparation.append(dataset)
@@ -149,7 +149,7 @@ class DatasetManager:
                 logger.info(f"⚠ Dataset {dataset} needs corpus creation and alignment (has raw data)")
                 needs_preparation.append(dataset)
             else:
-                logger.info(f"❌ Dataset {dataset} is missing completely")
+                logger.info(f"Dataset {dataset} is missing completely")
                 missing_datasets.append(dataset)
         
         # Handle completely missing datasets
@@ -176,12 +176,12 @@ class DatasetManager:
                     logger.error(f"Failed to prepare dataset: {dataset}")
                     return False
         
-        logger.info("🎉 All datasets are ready for training!")
+        logger.info("All datasets are ready for training.")
         return True
     
     def _prompt_download(self, datasets: List[str]) -> bool:
         """Prompt user whether to download missing datasets"""
-        print(f"\n❌ Missing datasets: {', '.join(datasets)}")
+        print(f"\nMissing datasets: {', '.join(datasets)}")
         print("\nThese datasets need to be downloaded and prepared:")
         for dataset in datasets:
             print(f"  - {dataset}")
@@ -213,7 +213,7 @@ class DatasetManager:
             ]
             
             result = subprocess.run(cmd, check=True, capture_output=False)
-            logger.info("✓ Download completed")
+            logger.info("Download completed")
             return True
             
         except subprocess.CalledProcessError as e:
@@ -260,7 +260,7 @@ class DatasetManager:
         if not self._organize_prepared_dataset(dataset):
             return False
             
-        logger.info(f"✓ Dataset {dataset} prepared successfully")
+        logger.info(f"Dataset {dataset} prepared successfully")
         return True
     
     def _create_corpus(self, dataset: str) -> bool:
@@ -294,7 +294,7 @@ class DatasetManager:
             cmd = [str(mfa_script), dataset]
             
             result = subprocess.run(cmd, check=True, capture_output=False)
-            logger.info(f"✓ MFA alignment completed for {dataset}")
+            logger.info(f"MFA alignment completed for {dataset}")
             return True
             
         except subprocess.CalledProcessError as e:

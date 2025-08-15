@@ -7,8 +7,7 @@ An open-source, cross-platform project that converts audio input into realistic 
 Core (uv)
 
 ```bash
-uv init
-uv sync                  
+uv sync
 ```
 
 MFA (micromamba)
@@ -26,4 +25,4 @@ Run `python training/scripts/downloadTrainingData.py` to download training sampl
 
 Run `python training/scripts/createDataCorpus.py` to convert LibriSpeech data to training format.
 
-Run `./run_mfa_alignment.sh` to perform forced alignment.
+Run `./run_mfa_alignment_prepared.sh` to perform forced alignment.

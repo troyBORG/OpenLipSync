@@ -455,20 +455,20 @@ def validate_environment(config: TrainingConfiguration) -> None:
         try:
             import torch
             if not torch.cuda.is_available():
-                print("⚠️  CUDA requested but not available. Falling back to CPU.")
+                print("CUDA requested but not available. Falling back to CPU.")
                 config.hardware.device = "cpu"
         except ImportError:
-            print("⚠️  PyTorch not installed. Cannot use CUDA. Falling back to CPU.")
+            print("PyTorch not installed. Cannot use CUDA. Falling back to CPU.")
             config.hardware.device = "cpu"
     
     elif config.hardware.device == "mps":
         try:
             import torch
             if not torch.backends.mps.is_available():
-                print("⚠️  MPS requested but not available. Falling back to CPU.")
+                print("MPS requested but not available. Falling back to CPU.")
                 config.hardware.device = "cpu"
         except ImportError:
-            print("⚠️  PyTorch not installed. Cannot use MPS. Falling back to CPU.")
+            print("PyTorch not installed. Cannot use MPS. Falling back to CPU.")
             config.hardware.device = "cpu"
     
     # Check required directories exist
@@ -488,12 +488,12 @@ if __name__ == "__main__":
     try:
         config = load_config(sys.argv[1])
         validate_environment(config)
-        print("✅ Configuration loaded and validated successfully!")
+        print("Configuration loaded and validated successfully.")
         print(f"Experiment: {config.experiment.name}")
         print(f"Model: {config.model.name} with {config.model.num_visemes} visemes")
         print(f"Audio: {config.audio.sample_rate}Hz, {config.audio.fps:.1f}fps")
         print(f"Device: {config.hardware.device}")
         
     except Exception as error:
-        print(f"❌ Configuration error: {error}")
+        print(f"Configuration error: {error}")
         sys.exit(1)

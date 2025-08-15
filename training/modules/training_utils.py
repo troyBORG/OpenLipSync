@@ -2,7 +2,7 @@
 Training Utilities for OpenLipSync TCN Training
 
 Provides metrics computation, checkpointing, early stopping, loss functions,
-and other utilities needed for robust model training.
+and other utilities for model training.
 """
 
 import os
@@ -779,4 +779,4 @@ if __name__ == "__main__":
         if should_stop:
             break
     
-    print("✅ Training utilities test completed successfully!")
+    print("Training utilities test completed successfully.")
