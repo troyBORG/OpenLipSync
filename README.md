@@ -26,6 +26,7 @@ mfa model download g2p english_us_arpa
 
 Dataset Download is now integrated in the training script.
 
+```python training/train.py --config training/recipes/tcn_config.toml```
 
 
 This project uses the [LibriSpeech ASR corpus](https://openslr.org/12/) (CC BY 4.0 license).

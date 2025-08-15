@@ -141,12 +141,16 @@ specaugment_time_mask_max_ms = 20  # Max audio to mask
 # Data pipeline parameters - what data to use and how to process it
 
 # DATASET: LibriSpeech is a large, free speech dataset
-dataset = "librispeech"  # ~1000 hours of read English speech
+dataset = "librispeech"
+
 #splits = ["train-clean-100", "train-clean-360", "train-other-500"]
-splits = ["dev-clean"]
-# train-clean-100: 100h of clean speech (start here for testing)
-# train-clean-360: +360h more clean speech
-# train-other-500: +500h of more varied/noisy speech (use last)
+splits = ["train-clean-100"]
+# train-clean-100: [~6GB] 100h of clean speech (start here for testing)
+# train-clean-360: [~23GB] 360h of clean speech
+# train-other-500: [~30GB] 500h of varied/noisy speech
+
+#In special for 360 and 500 grab a coffee(or your favorite beverage) because it will take a while.
+
 
 val_split = "dev-clean"    # Validation set (for monitoring training)
 test_split = "test-clean"  # Test set (for final evaluation only)

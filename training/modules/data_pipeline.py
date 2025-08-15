@@ -377,7 +377,7 @@ class LibriSpeechDataset(Dataset):
             self.dataset_manager = DatasetManager()
         
         # Ensure dataset is prepared
-        if not self.dataset_manager.prepare_datasets([split], interactive=False):
+        if not self.dataset_manager.prepare_datasets([split], interactive=True):
             raise RuntimeError(f"Failed to prepare dataset: {split}")
         
         # Load prepared data file list
