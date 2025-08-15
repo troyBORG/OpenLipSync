@@ -196,7 +196,7 @@ device = "cpu"      # Target device for training
 # Options: "cuda" (NVIDIA GPU or AMD GPU with ROCm), "cpu" (slow but works everywhere), "mps" (Apple Silicon)
 # Check: nvidia-smi (for CUDA), rocm-smi (for ROCm/AMD), or check GPU in system settings
 
-num_workers = 4      # How many CPU cores to use for loading data
+num_workers = 8      # How many CPU cores to use for loading data
 # More workers = faster data loading, but uses more CPU/memory
 # Good starting point: number of CPU cores / 2
 
@@ -207,7 +207,7 @@ pin_memory = true    # Speed optimization for GPU training
 # Logging and checkpointing - track progress and save models
 
 log_interval = 20    # Print training stats every 100 steps
-save_interval = 100  # Save model checkpoint every 1000 steps
+save_interval = 1000  # Save model checkpoint every 1000 steps
 # More frequent logging = better monitoring, but slower training
 
 max_checkpoints = 10   # Keep only the 5 most recent model saves

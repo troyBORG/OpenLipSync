@@ -193,6 +193,110 @@ def run_model_on_mel(
     return preds, probs  # (T,), (T, C)
 
 
+def ema_smooth_probs(probs: np.ndarray, alpha: float) -> np.ndarray:
+    """Apply EMA smoothing along the time axis on model probability outputs.
+
+    Args:
+        probs: Array shaped (T, C) containing per-frame class probabilities.
+        alpha: Smoothing amount in [0, 1]. 0 = no smoothing, 1 = max smoothing.
+
+    Returns:
+        Smoothed array of same shape as probs.
+    """
+    if probs is None or probs.size == 0:
+        return probs
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    if alpha == 0.0:
+        return probs
+    smoothed = probs.copy()
+    for t in range(1, smoothed.shape[0]):
+        smoothed[t] = (1.0 - alpha) * probs[t] + alpha * smoothed[t - 1]
+    return smoothed
+
+
+def median_filter_preds(preds: np.ndarray, window_size: int) -> np.ndarray:
+    """Apply 1D median filter to integer label sequence.
+
+    Ensures odd window size; pads with edge values.
+    """
+    if preds is None or preds.size == 0:
+        return preds
+    w = int(window_size)
+    if w <= 1:
+        return preds
+    if w % 2 == 0:
+        w += 1
+    pad = w // 2
+    padded = np.pad(preds, (pad, pad), mode="edge")
+    out = np.empty_like(preds)
+    for i in range(preds.shape[0]):
+        out[i] = int(np.median(padded[i:i + w]))
+    return out
+
+
+def sanitize_probs(probs: np.ndarray, silence_index: Optional[int] = None) -> np.ndarray:
+    """Clean up model probabilities before smoothing.
+
+    - Replace NaN/Inf with 0
+    - Clip to [0, 1]
+    - Renormalize each frame to sum to 1
+    - If a frame sums to 0, set one-hot to `silence_index` if provided, otherwise uniform
+    """
+    if probs is None or probs.size == 0:
+        return probs
+    cleaned = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+    cleaned = np.clip(cleaned, 0.0, 1.0)
+    row_sums = cleaned.sum(axis=1)
+    bad_rows = ~np.isfinite(row_sums) | (row_sums <= 0.0)
+    if np.any(bad_rows):
+        if silence_index is not None and 0 <= silence_index < cleaned.shape[1]:
+            cleaned[bad_rows, :] = 0.0
+            cleaned[bad_rows, silence_index] = 1.0
+        else:
+            cleaned[bad_rows, :] = 1.0 / cleaned.shape[1]
+        row_sums = cleaned.sum(axis=1)
+    cleaned = cleaned / np.maximum(row_sums[:, None], 1e-8)
+    return cleaned
+
+
+def sharpen_threshold_probs(
+    probs: np.ndarray,
+    gamma: float,
+    threshold: float,
+    silence_index: Optional[int] = None,
+) -> np.ndarray:
+    """Exponentially sharpen, threshold, and renormalize probabilities.
+
+    Args:
+        probs: (T, C) probabilities.
+        gamma: exponent >= 1.0 to sharpen distributions.
+        threshold: absolute cutoff; values below set to 0 before renorm.
+        silence_index: fallback class when a row becomes all-zero.
+    """
+    if probs is None or probs.size == 0:
+        return probs
+    g = max(1.0, float(gamma))
+    t = max(0.0, float(threshold))
+    # Exponential boost
+    eps = 1e-8
+    boosted = np.power(np.clip(probs, 0.0, 1.0) + eps, g)
+    # Threshold
+    if t > 0.0:
+        boosted[boosted < t] = 0.0
+    # Renormalize per-frame
+    row_sums = boosted.sum(axis=1)
+    bad_rows = ~np.isfinite(row_sums) | (row_sums <= 0.0)
+    if np.any(bad_rows):
+        if silence_index is not None and 0 <= silence_index < boosted.shape[1]:
+            boosted[bad_rows, :] = 0.0
+            boosted[bad_rows, silence_index] = 1.0
+        else:
+            boosted[bad_rows, :] = 1.0 / boosted.shape[1]
+        row_sums = boosted.sum(axis=1)
+    boosted = boosted / np.maximum(row_sums[:, None], 1e-8)
+    return boosted
+
+
 def plot_tracks(
     mel: np.ndarray,
     words: List[Tuple[float, float, str]],
@@ -437,8 +541,14 @@ def plot_tracks_with_per_viseme(
     show_phones: bool,
     show_visemes: bool,
     show_preds: bool,
+    probs_raw: Optional[np.ndarray] = None,
+    show_raw_model: bool = False,
 ) -> go.Figure:
-    include_per_viseme = (show_visemes and show_preds and probs is not None)
+    include_per_viseme = (
+        show_visemes and (
+            (show_preds and probs is not None) or (show_raw_model and probs_raw is not None)
+        )
+    )
     num_visemes = (max(viseme_index_to_name.keys()) + 1) if viseme_index_to_name else int(probs.shape[1] if probs is not None else 0)
 
     base_rows = 4
@@ -499,19 +609,26 @@ def plot_tracks_with_per_viseme(
         # Build grids
         total_frames = mel.shape[0]
         target_seq = viseme_intervals_to_sequence(viseme_intervals, total_frames=total_frames, fps=fps)
-        rows = num_visemes * 2
+        include_raw = (show_raw_model and probs_raw is not None)
+        rows_per = 2 + (1 if include_raw else 0)
+        rows = num_visemes * rows_per
         target_grid = np.full((rows, total_frames), np.nan, dtype=float)
         probs_grid = np.full((rows, total_frames), np.nan, dtype=float)
+        probs_raw_grid = np.full((rows, total_frames), np.nan, dtype=float) if include_raw else None
         for v in range(num_visemes):
-            top_row = 2 * v
-            bot_row = 2 * v + 1
+            base_row = rows_per * v
+            top_row = base_row
+            mid_row = base_row + 1
+            bot_row = base_row + 2 if include_raw else None
             if v <= target_seq.max():
                 target_grid[top_row, :] = (target_seq == v).astype(float)
             if probs is not None and v < probs.shape[1]:
-                probs_grid[bot_row, :] = probs[:total_frames, v]
+                probs_grid[mid_row, :] = probs[:total_frames, v]
+            if include_raw and probs_raw is not None and v < probs_raw.shape[1]:
+                probs_raw_grid[bot_row, :] = probs_raw[:total_frames, v]
 
         y_vals = np.arange(rows)
-        y_centers = np.array([2 * v + 0.5 for v in range(num_visemes)])
+        y_centers = np.array([rows_per * v + (rows_per - 1) / 2.0 for v in range(num_visemes)])
         y_center_labels = [viseme_index_to_name.get(v, str(v)) for v in range(num_visemes)]
 
         fig.add_trace(
@@ -523,7 +640,7 @@ def plot_tracks_with_per_viseme(
                 zmin=0.0,
                 zmax=1.0,
                 showscale=False,
-                name="Target (top)",
+                name="Target",
                 showlegend=False,
             ),
             row=total_rows, col=1,
@@ -537,11 +654,26 @@ def plot_tracks_with_per_viseme(
                 zmin=0.0,
                 zmax=1.0,
                 showscale=False,
-                name="Model (bottom)",
+                name="Model (smoothed)",
                 showlegend=False,
             ),
             row=total_rows, col=1,
         )
+        if include_raw and probs_raw_grid is not None:
+            fig.add_trace(
+                go.Heatmap(
+                    x=time_axis,
+                    y=y_vals,
+                    z=probs_raw_grid,
+                    colorscale=[[0.0, "rgb(0,0,0)"], [1.0, "rgb(0,100,255)"]],
+                    zmin=0.0,
+                    zmax=1.0,
+                    showscale=False,
+                    name="Model (raw)",
+                    showlegend=False,
+                ),
+                row=total_rows, col=1,
+            )
 
         fig.update_yaxes(
             tickmode="array", tickvals=y_centers, ticktext=y_center_labels,
@@ -553,7 +685,7 @@ def plot_tracks_with_per_viseme(
         x0 = time_axis[0]
         x1 = time_axis[-1]
         for k in range(1, num_visemes):
-            y = 2 * k - 0.5
+            y = rows_per * k - 0.5
             fig.add_shape(type="line", x0=x0, x1=x1, y0=y, y1=y, xref="x", yref=f"y{total_rows}", line=dict(color="lightgray", width=1))
 
     fig.update_layout(height=900 + (num_visemes * 60 if include_per_viseme else 0), hovermode="x unified")
@@ -596,6 +728,19 @@ def main():
     show_phones = st.sidebar.checkbox("Phonemes", value=True)
     show_visemes = st.sidebar.checkbox("Visemes", value=True)
     show_preds = st.sidebar.checkbox("Model output", value=True)
+    show_raw_model = st.sidebar.checkbox("Raw model output", value=False)
+
+    # EMA smoothing controls (only applied to model output probabilities)
+    st.sidebar.header("Smoothing")
+    enable_ema = st.sidebar.checkbox("Enable EMA", value=False)
+    ema_amount = st.sidebar.slider("EMA amount (0–1)", min_value=0.0, max_value=1.0, value=0.7, step=0.01)
+    enable_median = st.sidebar.checkbox("Enable median filter (labels)", value=False)
+    median_window = st.sidebar.slider("Median window (frames)", min_value=1, max_value=31, value=5, step=1)
+
+    st.sidebar.header("Sharpen / Threshold")
+    enable_sharpen = st.sidebar.checkbox("Enable sharpen/threshold", value=False)
+    sharpen_gamma = st.sidebar.slider("Gamma (>=1.0)", min_value=1.0, max_value=6.0, value=2.0, step=0.1)
+    sharpen_thresh = st.sidebar.slider("Threshold", min_value=0.0, max_value=0.2, value=0.01, step=0.005)
 
     if not samples:
         st.warning("No samples found in prepared data.")
@@ -615,9 +760,32 @@ def main():
     # Model predictions
     preds = None
     probs = None
+    probs_raw = None
     if ckpt_path is not None and ckpt_path.exists():
         run_cfg = load_run_config_for_checkpoint(ckpt_path) or base_cfg
         preds, probs = run_model_on_mel(mel, run_cfg, ckpt_path)
+        probs_raw = probs.copy() if probs is not None else None
+
+        # Sanitize probabilities to handle NaN/Inf/noise before smoothing
+        silence_idx = 0  # per viseme map, 0 == silence
+        if probs is not None:
+            probs = sanitize_probs(probs, silence_index=silence_idx)
+            preds = np.argmax(probs, axis=-1)
+
+            # Optional sharpen -> threshold -> renormalize (pre-smoothing)
+            if enable_sharpen:
+                probs = sharpen_threshold_probs(probs, gamma=sharpen_gamma, threshold=sharpen_thresh, silence_index=silence_idx)
+                preds = np.argmax(probs, axis=-1)
+
+        # Optionally smooth only the model outputs (probs) with EMA
+        if enable_ema and probs is not None and ema_amount > 0.0:
+            probs = ema_smooth_probs(probs, alpha=ema_amount)
+            # Update preds from smoothed probabilities for consistency where used
+            preds = np.argmax(probs, axis=-1)
+
+        # Optional median filter on discrete labels
+        if enable_median and preds is not None and median_window > 1:
+            preds = median_filter_preds(preds, window_size=median_window)
 
     fig = plot_tracks_with_per_viseme(
         mel=mel,
@@ -626,12 +794,14 @@ def main():
         viseme_intervals=viseme_intervals,
         preds=preds,
         probs=probs,
+        probs_raw=probs_raw,
         fps=base_cfg.audio.fps,
         viseme_index_to_name=load_viseme_index_to_name(base_cfg),
         show_words=show_words,
         show_phones=show_phones,
         show_visemes=show_visemes,
         show_preds=show_preds and preds is not None,
+        show_raw_model=show_raw_model and probs_raw is not None,
     )
     st.plotly_chart(fig, use_container_width=True)
 
