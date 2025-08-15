@@ -92,27 +92,25 @@ class DatasetManager:
         )
     
     def _check_aligned_data(self, dataset: str) -> bool:
-        """Check if MFA alignment data exists (JSON files)"""
-        # Check alignment data
-        align_dirs = list((self.data_dir / "out_align").glob(f"{dataset}_*"))
-        return len(align_dirs) > 0 and any(
-            list(d.glob("*.json"))
-            for d in align_dirs if d.is_dir()
-        )
+        """Check if MFA alignment data exists in cache (JSON files)."""
+        cache_dir = self.data_dir / "cache" / f"out_align_{dataset}"
+        if cache_dir.is_dir() and any(cache_dir.rglob("*.json")):
+            return True
+        return False
     
     def _check_prepared_data(self, dataset: str) -> bool:
-        """Check if final prepared data exists (WAV + LAB + JSON in flat structure)"""
+        """Check if prepared data exists (WAV + LAB in flat structure).
+
+        JSON alignment files are optional and may be added later.
+        """
         prepared_dataset_dir = self.prepared_dir / dataset
         if not prepared_dataset_dir.exists():
             return False
             
-        # Check if we have all three file types
+        # Require matching WAV and LAB pairs; JSONs are not required
         wav_files = set(f.stem for f in prepared_dataset_dir.glob("*.wav"))
         lab_files = set(f.stem for f in prepared_dataset_dir.glob("*.lab"))
-        json_files = set(f.stem for f in prepared_dataset_dir.glob("*.json"))
-        
-        # Should have same set of base names for all file types
-        return len(wav_files) > 0 and wav_files == lab_files == json_files
+        return len(wav_files) > 0 and wav_files == lab_files
     
     def prepare_datasets(self, datasets: List[str], interactive: bool = True) -> bool:
         """
@@ -255,8 +253,8 @@ class DatasetManager:
                 logger.warning("MFA alignment failed, but continuing with placeholders")
                 # Still organize the dataset even if alignment failed
         
-        # Step 3: Ensure all files have JSON companions (even if placeholders)
-        logger.info("Finalizing dataset organization...")
+        # Step 3: Copy any available alignment JSONs (do not create placeholders)
+        logger.info("Finalizing dataset organization (copying alignments if available)...")
         if not self._organize_prepared_dataset(dataset):
             return False
             
@@ -305,7 +303,10 @@ class DatasetManager:
             return False
     
     def _organize_prepared_dataset(self, dataset: str) -> bool:
-        """Add MFA alignment data to prepared dataset (WAV+LAB already exist)"""
+        """Copy MFA alignment JSONs from cache into prepared dataset if available.
+
+        Does not create placeholder JSON files.
+        """
         try:
             prepared_dataset_dir = self.prepared_dir / dataset
             
@@ -313,17 +314,11 @@ class DatasetManager:
                 logger.error(f"Prepared dataset directory not found: {prepared_dataset_dir}")
                 return False
             
-            # Find alignment directories for this dataset
-            align_dirs = list((self.data_dir / "out_align").glob(f"{dataset}_*"))
+            # Alignment directory in cache
+            cache_dir = self.data_dir / "cache" / f"out_align_{dataset}"
             
-            if not align_dirs:
-                logger.warning(f"No alignment data found for {dataset} - creating placeholder JSON files")
-                # Create placeholder JSON files for all WAV files
-                for wav_file in prepared_dataset_dir.glob("*.wav"):
-                    json_file = wav_file.with_suffix(".json")
-                    if not json_file.exists():
-                        with open(json_file, 'w') as f:
-                            json.dump({"error": "No alignment data available"}, f)
+            if not cache_dir.is_dir():
+                logger.warning(f"No alignment data found for {dataset} - leaving JSONs absent")
                 return True
             
             # Copy alignment files to prepared directory
@@ -336,21 +331,15 @@ class DatasetManager:
                     continue  # Already have alignment
                 
                 # Find corresponding JSON file in alignment directories
-                source_json = None
-                for align_dir in align_dirs:
-                    potential_json = align_dir / f"{base_name}.json"
-                    if potential_json.exists():
-                        source_json = potential_json
-                        break
+                source_json: Optional[Path] = None
+                for potential_json in cache_dir.rglob(f"{base_name}.json"):
+                    source_json = potential_json
+                    break
                 
                 if source_json:
                     import shutil
                     shutil.copy2(source_json, json_file)
                     file_count += 1
-                else:
-                    # Create placeholder JSON if no alignment
-                    with open(json_file, 'w') as f:
-                        json.dump({"error": "No alignment data available"}, f)
             
             logger.info(f"Added alignment data for {file_count} samples in {dataset}")
             return True
