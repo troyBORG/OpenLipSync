@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 
 # Configuration
-DEFAULT_DATASETS_DIR = "training/data/datasets"  # Relative to project root
+DEFAULT_DATASETS_DIR = "training/data/raw"  # Relative to project root
 CHUNK_SIZE = 8192  # 8KB chunks for downloading
 MAX_RETRIES = 3
 RETRY_DELAY = 1.0  # Initial retry delay in seconds
@@ -352,7 +352,7 @@ def select_datasets_interactively() -> List[str]:
 def main() -> None:
     """Main function."""
     parser = argparse.ArgumentParser(
-        description=f"Download and prepare LibriSpeech training samples into {DEFAULT_DATASETS_DIR}/.",
+        description=f"Download raw LibriSpeech datasets into {DEFAULT_DATASETS_DIR}/.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

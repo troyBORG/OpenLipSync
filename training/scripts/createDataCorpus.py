@@ -13,8 +13,8 @@ import tqdm
 
 
 # Configuration
-DEFAULT_LIBRISPEECH_DIR = "training/data/datasets/LibriSpeech"  # Relative to project root
-DEFAULT_CORPUS_DIR = "training/data/data_corpus"  # Relative to project root
+DEFAULT_LIBRISPEECH_DIR = "training/data/raw/LibriSpeech"  # Relative to project root
+DEFAULT_PREPARED_DIR = "training/data/prepared"  # Relative to project root
 SUPPORTED_SUBSETS = {"test-clean", "train-clean-100", "train-clean-360", "train-other-500", "dev-clean", "dev-other", "test-other"}
 
 # Audio conversion settings
@@ -153,10 +153,14 @@ def count_files_in_subset(librispeech_dir: Path, subset: str) -> int:
     return count
 
 
-def process_subset(librispeech_dir: Path, corpus_dir: Path, subset: str, 
-                  organize_by_speaker: bool = True) -> tuple[int, int]:
+def process_subset(librispeech_dir: Path, prepared_dir: Path, subset: str) -> tuple[int, int]:
     """
-    Process a LibriSpeech subset and convert to MFA format.
+    Process a LibriSpeech subset and convert to prepared flat format.
+    
+    Args:
+        librispeech_dir: Path to raw LibriSpeech data
+        prepared_dir: Path to prepared datasets directory 
+        subset: Name of the subset to process
     
     Returns:
         tuple: (successful_files, total_files)
@@ -167,6 +171,10 @@ def process_subset(librispeech_dir: Path, corpus_dir: Path, subset: str,
         return 0, 0
     
     logger.info(f"Processing subset: {subset}")
+    
+    # Create output directory for this dataset
+    output_dir = prepared_dir / subset
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     # Count files for progress bar
     total_files = count_files_in_subset(librispeech_dir, subset)
@@ -220,18 +228,9 @@ def process_subset(librispeech_dir: Path, corpus_dir: Path, subset: str,
                         pbar.update(1)
                         continue
                     
-                    # Determine output paths
-                    if organize_by_speaker:
-                        output_dir = corpus_dir / f"{subset}_{speaker_id}"
-                        wav_filename = f"{utterance_id}.wav"
-                        lab_filename = f"{utterance_id}.lab"
-                    else:
-                        output_dir = corpus_dir / subset
-                        wav_filename = f"{utterance_id}.wav"
-                        lab_filename = f"{utterance_id}.lab"
-                    
-                    wav_path = output_dir / wav_filename
-                    lab_path = output_dir / lab_filename
+                    # Create flat file names (utterance_id is already unique)
+                    wav_path = output_dir / f"{utterance_id}.wav"
+                    lab_path = output_dir / f"{utterance_id}.lab"
                     
                     # Convert audio
                     if convert_flac_to_wav(file_path, wav_path):
@@ -299,14 +298,13 @@ def select_subsets_interactively(available_subsets: List[str]) -> List[str]:
 def main() -> None:
     """Main function."""
     parser = argparse.ArgumentParser(
-        description="Convert LibriSpeech dataset to Montreal Forced Aligner (MFA) corpus format.",
+        description="Convert LibriSpeech dataset to prepared format with flat structure for training.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s --subsets test-clean
-  %(prog)s --all --organize-by-speaker
-  %(prog)s --subsets train-clean-100 --librispeech-dir /data/LibriSpeech --corpus-dir /data/mfa_corpus
-  %(prog)s --flat-structure  # Don't organize by speaker
+  %(prog)s --all
+  %(prog)s --subsets train-clean-100 --librispeech-dir /data/LibriSpeech --prepared-dir /data/prepared
         """
     )
     parser.add_argument(
@@ -326,15 +324,10 @@ Examples:
         help=f"LibriSpeech dataset directory (default: <repo>/{DEFAULT_LIBRISPEECH_DIR})",
     )
     parser.add_argument(
-        "--corpus-dir",
+        "--prepared-dir",
         type=str,
         default=None,
-        help=f"Output MFA corpus directory (default: <repo>/{DEFAULT_CORPUS_DIR})",
-    )
-    parser.add_argument(
-        "--flat-structure",
-        action="store_true",
-        help="Don't organize by speaker (flat structure by subset only)",
+        help=f"Output prepared dataset directory (default: <repo>/{DEFAULT_PREPARED_DIR})",
     )
     parser.add_argument(
         "--verbose",
@@ -358,14 +351,14 @@ Examples:
     # Resolve paths
     try:
         librispeech_dir = resolve_path(args.librispeech_dir, DEFAULT_LIBRISPEECH_DIR)
-        corpus_dir = resolve_path(args.corpus_dir, DEFAULT_CORPUS_DIR)
+        prepared_dir = resolve_path(args.prepared_dir, DEFAULT_PREPARED_DIR)
         
         if not librispeech_dir.exists():
             logger.error(f"LibriSpeech directory not found: {librispeech_dir}")
             logger.error("Please run the download script first or specify --librispeech-dir")
             sys.exit(1)
         
-        ensure_directory(corpus_dir)
+        ensure_directory(prepared_dir)
     except Exception as e:
         logger.error(f"Failed to setup directories: {e}")
         sys.exit(1)
@@ -399,9 +392,9 @@ Examples:
         sys.exit(0)
 
     logger.info(f"LibriSpeech directory: {librispeech_dir}")
-    logger.info(f"MFA corpus directory: {corpus_dir}")
+    logger.info(f"Prepared dataset directory: {prepared_dir}")
     logger.info(f"Selected subsets: {', '.join(selected_subsets)}")
-    logger.info(f"Organization: {'By speaker' if not args.flat_structure else 'Flat (by subset only)'}")
+    logger.info(f"Organization: Flat structure per dataset")
 
     # Process each subset
     total_successful = 0
@@ -410,9 +403,8 @@ Examples:
     for subset in selected_subsets:
         successful, total = process_subset(
             librispeech_dir, 
-            corpus_dir, 
-            subset, 
-            organize_by_speaker=not args.flat_structure
+            prepared_dir, 
+            subset
         )
         total_successful += successful
         total_files += total
@@ -428,18 +420,16 @@ Examples:
     
     if total_successful == total_files:
         logger.info("🎉 All files converted successfully!")
-        logger.info(f"MFA corpus ready at: {corpus_dir}")
+        logger.info(f"Prepared datasets ready at: {prepared_dir}")
         logger.info("\nNext steps:")
-        logger.info("1. Install MFA: conda install -c conda-forge montreal-forced-aligner")
-        logger.info("2. Download models: mfa model download acoustic english_mfa")
-        logger.info("3. Download dictionary: mfa model download dictionary english_mfa")
-        logger.info(f"4. Run alignment: mfa align {corpus_dir} english_mfa english_mfa output/")
+        logger.info("1. Run MFA alignment on the prepared datasets")
+        logger.info("2. Start training with: python training/train.py --config training/recipes/tcn_config.toml")
     elif total_successful == 0:
         logger.error("❌ No files were converted successfully.")
         sys.exit(1)
     else:
         logger.warning(f"⚠ {total_files - total_successful} files failed to convert.")
-        logger.info(f"MFA corpus partially ready at: {corpus_dir}")
+        logger.info(f"Prepared datasets partially ready at: {prepared_dir}")
 
 
 if __name__ == "__main__":

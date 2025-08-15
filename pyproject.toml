@@ -5,6 +5,13 @@ description = ""
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "requests>=2.31.0",
-    "tqdm>=4.66.0",
+    "requests",
+    "tqdm",
+    "torch",
+    "torchaudio",
+    "numpy",
+    "scikit-learn",
+    "tensorboard",
+    "matplotlib",
+    "torchcodec>=0.6.0",
 ]

@@ -142,7 +142,8 @@ specaugment_time_mask_max_ms = 20  # Max audio to mask
 
 # DATASET: LibriSpeech is a large, free speech dataset
 dataset = "librispeech"  # ~1000 hours of read English speech
-splits = ["train-clean-100", "train-clean-360", "train-other-500"]
+#splits = ["train-clean-100", "train-clean-360", "train-other-500"]
+splits = ["dev-clean"]
 # train-clean-100: 100h of clean speech (start here for testing)
 # train-clean-360: +360h more clean speech
 # train-other-500: +500h of more varied/noisy speech (use last)
@@ -159,7 +160,7 @@ gain_range = [0.8, 1.2]     # Randomly change volume by ±20%
 # But can slow training, so start without it
 
 # PHONEME TO VISEME MAPPING: How speech sounds map to mouth shapes
-phoneme_viseme_map = "configs/viseme_map_en_us_arpa.json"
+phoneme_viseme_map = "training/configs/viseme_map_en_us_arpa.json"
 # This file defines which mouth shape to use for each speech sound
 # Different languages/accents might need different mappings
 #
@@ -187,7 +188,7 @@ target_hardware = "cpu"      # Test speed on CPU (for real-time requirements)
 [hardware]
 # Hardware-specific settings - configure for your computer
 
-device = "cuda"      # Use GPU for training (much faster than CPU)
+device = "cpu"      # Target device for training
 # Options: "cuda" (NVIDIA GPU or AMD GPU with ROCm), "cpu" (slow but works everywhere), "mps" (Apple Silicon)
 # Check: nvidia-smi (for CUDA), rocm-smi (for ROCm/AMD), or check GPU in system settings
 
