@@ -28,7 +28,7 @@ from .dataset_manager import DatasetManager
 class AudioSample:
     """Container for a processed audio sample"""
     audio_features: torch.Tensor  # Shape: (time_frames, n_mels)
-    viseme_targets: torch.Tensor  # Shape: (time_frames,)
+    viseme_targets: torch.Tensor  # Shape: (time_frames,) for single-label or (time_frames, C) for multi-label
     sample_rate: int
     duration_seconds: float
     speaker_id: str
@@ -176,14 +176,24 @@ class PhonemeAligner:
             audio_duration: Total duration of audio in seconds
             
         Returns:
-            torch.Tensor: Frame-level viseme targets, shape (time_frames,)
+            torch.Tensor: Frame-level viseme targets, shape (time_frames,) or (time_frames, C) if multi_label
         """
         # Calculate number of frames
         num_frames = int(audio_duration * self.config.audio.fps)
         frame_duration = 1.0 / self.config.audio.fps
         
-        # Initialize with silence (viseme 0)
-        viseme_targets = torch.zeros(num_frames, dtype=torch.long)
+        num_classes = self.config.model.num_visemes
+        is_multi = bool(getattr(self.config.training, "multi_label", False))
+        target_crossfade_ms = int(getattr(self.config.training, "target_crossfade_ms", 0))
+        crossfade_frames = int(round((target_crossfade_ms / 1000.0) * self.config.audio.fps)) if target_crossfade_ms > 0 else 0
+
+        if is_multi:
+            viseme_targets = torch.zeros(num_frames, num_classes, dtype=torch.float32)
+            silence_idx = 0
+            viseme_targets[:, silence_idx] = 1.0
+        else:
+            # Initialize with silence (viseme 0)
+            viseme_targets = torch.zeros(num_frames, dtype=torch.long)
         
         # Fill in viseme targets based on phoneme timestamps
         for phoneme, (start_time, end_time) in zip(phoneme_sequence, phoneme_timestamps):
@@ -200,8 +210,41 @@ class PhonemeAligner:
             
             # Assign viseme to frames
             if start_frame < end_frame:
-                viseme_targets[start_frame:end_frame] = viseme_id
+                if is_multi:
+                    # Clear default silence
+                    viseme_targets[start_frame:end_frame, :] = 0.0
+                    viseme_targets[start_frame:end_frame, viseme_id] = 1.0
+                else:
+                    viseme_targets[start_frame:end_frame] = viseme_id
         
+        # Apply boundary-aware soft targets for multi-label
+        if is_multi and crossfade_frames > 0:
+            # Build a binary hard label timeline first to locate transitions
+            hard = torch.argmax(viseme_targets, dim=-1)  # (T,)
+            transitions: List[int] = []
+            prev = int(hard[0].item()) if num_frames > 0 else 0
+            for t in range(1, num_frames):
+                cur = int(hard[t].item())
+                if cur != prev:
+                    transitions.append(t)
+                prev = cur
+            # For each transition, create a symmetric linear ramp from prev->cur over ±crossfade_frames
+            for t0 in transitions:
+                a = int(hard[max(0, t0 - 1)].item())  # class before boundary
+                b = int(hard[min(num_frames - 1, t0)].item())  # class after boundary
+                start = max(0, t0 - crossfade_frames)
+                end = min(num_frames, t0 + crossfade_frames)
+                for t in range(start, end):
+                    # r in [0,1] centered at boundary
+                    if t < t0:
+                        r = (t - start) / max(1, (t0 - start))
+                    else:
+                        r = 1.0 - (t - t0) / max(1, (end - t0))
+                    # Blend a and b; keep others at 0
+                    base = torch.zeros(num_classes, dtype=torch.float32)
+                    base[a] = 1.0 - float(r)
+                    base[b] = float(r)
+                    viseme_targets[t, :] = base
         return viseme_targets
     
     def get_phoneme_index(self, phoneme: str) -> int:
@@ -532,7 +575,12 @@ class LibriSpeechDataset(Dataset):
             
             # Initialize targets
             phoneme_targets = torch.zeros(target_frames, dtype=torch.long)
-            viseme_targets = torch.zeros(target_frames, dtype=torch.long)
+            num_classes = self.config.model.num_visemes
+            if bool(getattr(self.config.training, "multi_label", False)):
+                viseme_targets = torch.zeros(target_frames, num_classes, dtype=torch.float32)
+                viseme_targets[:, 0] = 1.0  # default silence
+            else:
+                viseme_targets = torch.zeros(target_frames, dtype=torch.long)
             
             # Process each phoneme interval
             for start_time, end_time, phone in phones_tier:
@@ -551,7 +599,11 @@ class LibriSpeechDataset(Dataset):
                     
                     # Set targets for this interval
                     phoneme_targets[start_frame:end_frame] = phoneme_idx
-                    viseme_targets[start_frame:end_frame] = viseme_idx
+                    if viseme_targets.dim() == 2:
+                        viseme_targets[start_frame:end_frame, :] = 0.0
+                        viseme_targets[start_frame:end_frame, viseme_idx] = 1.0
+                    else:
+                        viseme_targets[start_frame:end_frame] = viseme_idx
             
             return phoneme_targets, viseme_targets
             
@@ -572,6 +624,8 @@ class LibriSpeechDataset(Dataset):
         """
         # This is a simplified placeholder - real alignment needs MFA
         num_frames = int(duration * self.config.audio.fps)
+        num_classes = self.config.model.num_visemes
+        is_multi = bool(getattr(self.config.training, "multi_label", False))
         
         # Map common letter patterns to visemes (very crude approximation)
         letter_to_viseme = {
@@ -604,7 +658,7 @@ class LibriSpeechDataset(Dataset):
         
         # Spread visemes over time frames
         if len(viseme_sequence) == 0:
-            return torch.zeros(num_frames, dtype=torch.long)
+            return torch.zeros((num_frames, num_classes), dtype=torch.float32) if is_multi else torch.zeros(num_frames, dtype=torch.long)
         
         frames_per_viseme = max(1, num_frames // len(viseme_sequence))
         targets = []
@@ -616,7 +670,10 @@ class LibriSpeechDataset(Dataset):
         targets = targets[:num_frames]
         while len(targets) < num_frames:
             targets.append(0)  # Pad with silence
-        
+        if is_multi:
+            out = torch.zeros(num_frames, num_classes, dtype=torch.float32)
+            out[torch.arange(num_frames), torch.tensor(targets, dtype=torch.long)] = 1.0
+            return out
         return torch.tensor(targets, dtype=torch.long)
     
     def _apply_chunking(self, audio_sample: AudioSample) -> AudioSample:
@@ -688,17 +745,27 @@ def collate_audio_samples(batch: List[AudioSample]) -> Dict[str, torch.Tensor]:
             padding = torch.zeros(max_length - seq_length, features.shape[1])
             features = torch.cat([features, padding], dim=0)
             
-            # Pad targets with silence (0)
-            target_padding = torch.zeros(max_length - seq_length, dtype=torch.long)
+            # Pad targets: handle (T,) long or (T,C) float
+            if targets.dim() == 1:
+                target_padding = torch.zeros(max_length - seq_length, dtype=torch.long)
+            else:
+                num_classes = targets.shape[1]
+                target_padding = torch.zeros(max_length - seq_length, num_classes, dtype=targets.dtype)
+                target_padding[:, 0] = 1.0  # pad with silence for multi-label
             targets = torch.cat([targets, target_padding], dim=0)
         
         batch_features.append(features)
         batch_targets.append(targets)
         batch_lengths.append(seq_length)
     
+    # Stack targets handling variable dims
+    if batch_targets[0].dim() == 1:
+        targets_out = torch.stack(batch_targets)  # (B, T)
+    else:
+        targets_out = torch.stack(batch_targets)  # (B, T, C)
     return {
         'features': torch.stack(batch_features),  # (batch, time, n_mels)
-        'targets': torch.stack(batch_targets),    # (batch, time)
+        'targets': targets_out,                   # (batch, time) or (batch, time, C)
         'lengths': torch.tensor(batch_lengths),   # (batch,)
         'speaker_ids': [sample.speaker_id for sample in batch],
         'utterance_ids': [sample.utterance_id for sample in batch],

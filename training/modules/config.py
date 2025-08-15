@@ -108,6 +108,8 @@ class TrainingConfig:
     early_stopping_metric: str
     specaugment_enabled: bool
     specaugment_time_mask_max_ms: int
+    multi_label: bool = False
+    target_crossfade_ms: int = 0
     
     def __post_init__(self):
         """Validate training parameters"""
@@ -139,6 +141,8 @@ class TrainingConfig:
             raise ValueError(f"early_stopping_patience must be positive, got {self.early_stopping_patience}")
         if self.early_stopping_metric not in ["val_loss", "val_f1"]:
             raise ValueError(f"Invalid early_stopping_metric: {self.early_stopping_metric}")
+        if self.target_crossfade_ms < 0:
+            raise ValueError(f"target_crossfade_ms must be non-negative, got {self.target_crossfade_ms}")
 
 
 @dataclass
@@ -171,6 +175,10 @@ class EvaluationConfig:
     metrics: List[str]
     compute_latency: bool
     target_hardware: str
+    viseme_crossfade_enabled: bool = False
+    viseme_crossfade_ms: int = 0
+    viseme_overlap_enabled: bool = False
+    viseme_overlap_threshold: float = 0.0
     
     def __post_init__(self):
         """Validate evaluation parameters"""
@@ -180,6 +188,10 @@ class EvaluationConfig:
                 raise ValueError(f"Invalid metric: {metric}. Valid options: {valid_metrics}")
         if self.target_hardware not in ["cpu", "cuda", "mps"]:
             raise ValueError(f"Invalid target_hardware: {self.target_hardware}")
+        if self.viseme_crossfade_ms < 0:
+            raise ValueError(f"viseme_crossfade_ms must be non-negative, got {self.viseme_crossfade_ms}")
+        if not 0.0 <= self.viseme_overlap_threshold <= 1.0:
+            raise ValueError(f"viseme_overlap_threshold must be in [0,1], got {self.viseme_overlap_threshold}")
 
 
 @dataclass

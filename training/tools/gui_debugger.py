@@ -264,6 +264,7 @@ def sharpen_threshold_probs(
     gamma: float,
     threshold: float,
     silence_index: Optional[int] = None,
+    norm_mode: str = "sum",
 ) -> np.ndarray:
     """Exponentially sharpen, threshold, and renormalize probabilities.
 
@@ -283,17 +284,40 @@ def sharpen_threshold_probs(
     # Threshold
     if t > 0.0:
         boosted[boosted < t] = 0.0
-    # Renormalize per-frame
-    row_sums = boosted.sum(axis=1)
-    bad_rows = ~np.isfinite(row_sums) | (row_sums <= 0.0)
-    if np.any(bad_rows):
-        if silence_index is not None and 0 <= silence_index < boosted.shape[1]:
-            boosted[bad_rows, :] = 0.0
-            boosted[bad_rows, silence_index] = 1.0
-        else:
-            boosted[bad_rows, :] = 1.0 / boosted.shape[1]
+    # Normalize per-frame according to mode
+    mode = (norm_mode or "sum").lower()
+    if mode == "sum":
         row_sums = boosted.sum(axis=1)
-    boosted = boosted / np.maximum(row_sums[:, None], 1e-8)
+        bad_rows = ~np.isfinite(row_sums) | (row_sums <= 0.0)
+        if np.any(bad_rows):
+            if silence_index is not None and 0 <= silence_index < boosted.shape[1]:
+                boosted[bad_rows, :] = 0.0
+                boosted[bad_rows, silence_index] = 1.0
+            else:
+                boosted[bad_rows, :] = 1.0 / boosted.shape[1]
+            row_sums = boosted.sum(axis=1)
+        boosted = boosted / np.maximum(row_sums[:, None], 1e-8)
+    elif mode == "max":
+        row_max = boosted.max(axis=1)
+        bad_rows = ~np.isfinite(row_max) | (row_max <= 0.0)
+        if np.any(bad_rows):
+            if silence_index is not None and 0 <= silence_index < boosted.shape[1]:
+                boosted[bad_rows, :] = 0.0
+                boosted[bad_rows, silence_index] = 1.0
+            else:
+                boosted[bad_rows, :] = 1.0 / boosted.shape[1]
+            row_max = boosted.max(axis=1)
+        boosted = boosted / np.maximum(row_max[:, None], 1e-8)
+    else:
+        # None: keep values as-is (already clipped to [0,1]); ensure not-all-zero rows
+        row_sums = boosted.sum(axis=1)
+        bad_rows = ~np.isfinite(row_sums) | (row_sums <= 0.0)
+        if np.any(bad_rows):
+            if silence_index is not None and 0 <= silence_index < boosted.shape[1]:
+                boosted[bad_rows, :] = 0.0
+                boosted[bad_rows, silence_index] = 1.0
+            else:
+                boosted[bad_rows, :] = 1.0 / boosted.shape[1]
     return boosted
 
 
@@ -741,6 +765,7 @@ def main():
     enable_sharpen = st.sidebar.checkbox("Enable sharpen/threshold", value=False)
     sharpen_gamma = st.sidebar.slider("Gamma (>=1.0)", min_value=1.0, max_value=6.0, value=2.0, step=0.1)
     sharpen_thresh = st.sidebar.slider("Threshold", min_value=0.0, max_value=0.2, value=0.01, step=0.005)
+    norm_mode = st.sidebar.selectbox("Normalization mode", ["sum", "max", "none"], index=0, help="'sum' keeps rows summing to 1 (exclusive); 'max' scales peak to 1 allowing coexistence; 'none' keeps magnitudes after thresholding.")
 
     if not samples:
         st.warning("No samples found in prepared data.")
@@ -774,7 +799,7 @@ def main():
 
             # Optional sharpen -> threshold -> renormalize (pre-smoothing)
             if enable_sharpen:
-                probs = sharpen_threshold_probs(probs, gamma=sharpen_gamma, threshold=sharpen_thresh, silence_index=silence_idx)
+                probs = sharpen_threshold_probs(probs, gamma=sharpen_gamma, threshold=sharpen_thresh, silence_index=silence_idx, norm_mode=norm_mode)
                 preds = np.argmax(probs, axis=-1)
 
         # Optionally smooth only the model outputs (probs) with EMA

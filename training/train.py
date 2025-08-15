@@ -25,6 +25,7 @@ from typing import Dict, Any, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
@@ -148,6 +149,38 @@ class TCNTrainer:
             metric_name=metric_name,
             minimize=minimize
         )
+
+    def _apply_viseme_crossfade(self, predictions: torch.Tensor) -> torch.Tensor:
+        """Optionally apply temporal cross-fade smoothing on per-frame class probabilities.
+
+        The smoothing is applied only for metric computation/visualization, never for loss.
+        """
+        try:
+            if not self.config.evaluation.viseme_crossfade_enabled:
+                return predictions
+            ms = int(getattr(self.config.evaluation, "viseme_crossfade_ms", 0))
+            if ms <= 0:
+                return predictions
+            # Convert half-width milliseconds to frames (round to nearest)
+            half_width_frames = int(round((ms / 1000.0) * float(self.config.audio.fps)))
+            if half_width_frames <= 0:
+                return predictions
+            with torch.no_grad():
+                # Convert logits -> probabilities suitable for current training mode
+                if self.config.training.multi_label:
+                    probs = torch.sigmoid(predictions.detach())  # (B, T, C)
+                else:
+                    probs = torch.softmax(predictions.detach(), dim=-1)  # (B, T, C)
+                x = probs.transpose(1, 2)  # (B, C, T)
+                pad = (half_width_frames, half_width_frames)
+                x = F.pad(x, pad=pad, mode="replicate")  # pad time dimension
+                kernel = 2 * half_width_frames + 1
+                smoothed = F.avg_pool1d(x, kernel_size=kernel, stride=1)  # (B, C, T)
+                smoothed = smoothed.transpose(1, 2)  # (B, T, C)
+                return smoothed
+        except Exception:
+            # In case of any unexpected issue, fall back to original predictions
+            return predictions
     
     def _resume_from_checkpoint(self, checkpoint_path: str):
         """Resume training from a saved checkpoint"""
@@ -232,8 +265,9 @@ class TCNTrainer:
             if self.scheduler and self.config.training.scheduler == "onecycle":
                 self.scheduler.step()
             
-            # Update metrics
-            self.train_metrics.update(predictions, viseme_targets, sequence_lengths)
+            # Update metrics (optionally apply cross-fade smoothing for metrics only)
+            preds_for_metrics = self._apply_viseme_crossfade(predictions)
+            self.train_metrics.update(preds_for_metrics, viseme_targets, sequence_lengths)
             
             # Calculate timing
             batch_time = time.time() - batch_start_time
@@ -301,8 +335,9 @@ class TCNTrainer:
                     predictions = self.model(audio_features, sequence_lengths)
                     loss = self.loss_function(predictions, viseme_targets)
                 
-                # Update metrics
-                self.val_metrics.update(predictions, viseme_targets, sequence_lengths)
+                # Update metrics (optionally apply cross-fade smoothing for metrics only)
+                preds_for_metrics = self._apply_viseme_crossfade(predictions)
+                self.val_metrics.update(preds_for_metrics, viseme_targets, sequence_lengths)
                 total_val_loss += loss.item()
                 num_batches += 1
         
@@ -459,7 +494,8 @@ class TCNTrainer:
                 predictions = self.model(audio_features, sequence_lengths)
                 loss = self.loss_function(predictions, viseme_targets)
                 
-                test_metrics.update(predictions, viseme_targets, sequence_lengths)
+                preds_for_metrics = self._apply_viseme_crossfade(predictions)
+                test_metrics.update(preds_for_metrics, viseme_targets, sequence_lengths)
                 total_test_loss += loss.item()
                 num_batches += 1
         
