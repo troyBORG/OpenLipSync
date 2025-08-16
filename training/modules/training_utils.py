@@ -367,16 +367,16 @@ class MetricsTracker:
         
         if "frame_accuracy" in config.evaluation.metrics:
             self.metrics["frame_accuracy"] = FrameAccuracy(
-                overlap_enabled=config.evaluation.viseme_overlap_enabled,
-                overlap_threshold=config.evaluation.viseme_overlap_threshold,
+                overlap_enabled=config.training.viseme_overlap_enabled,
+                overlap_threshold=config.training.viseme_overlap_threshold,
                 multi_label=config.training.multi_label,
             )
         
         if "macro_f1" in config.evaluation.metrics:
             self.metrics["macro_f1"] = MacroF1Score(
                 self.num_classes,
-                overlap_enabled=config.evaluation.viseme_overlap_enabled,
-                overlap_threshold=config.evaluation.viseme_overlap_threshold,
+                overlap_enabled=config.training.viseme_overlap_enabled,
+                overlap_threshold=config.training.viseme_overlap_threshold,
                 multi_label=config.training.multi_label,
             )
         

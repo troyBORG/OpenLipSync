@@ -95,6 +95,10 @@ loss_type = "cross_entropy"  # "cross_entropy" for single- OR multi-label (uses 
 # Options: "cross_entropy" (standard or multi-label via BCE), "focal_loss" (for imbalanced data)
 multi_label = true            # Enable multi-label training (sigmoid + BCE); targets become multi-hot per frame
 target_crossfade_ms = 30      # Soft multi-hot targets around boundaries (0 disables). Use ~20–60ms
+ 
+# OVERLAP: allow multiple visemes to be considered active near boundaries (also used by metrics)
+viseme_overlap_enabled = true
+viseme_overlap_threshold = 0.5 # 50% overlap threshold
 
 class_weighting = true  # Give more importance to rare visemes
 # Some mouth shapes are much rarer than others in speech
@@ -150,7 +154,7 @@ dataset = "librispeech"
 
 #splits = ["train-clean-100", "train-clean-360", "train-other-500"]
 #splits = ["train-clean-100"]
-splits = ["train-clean-360"]
+splits = ["train-clean-100","train-clean-360"]
 # train-clean-100: [~6GB] 100h of clean speech (start here for testing)
 # train-clean-360: [~23GB] 360h of clean speech
 # train-other-500: [~30GB] 500h of varied/noisy speech
@@ -195,13 +199,7 @@ target_hardware = "cpu"      # Test speed on CPU (for real-time requirements)
 # Real-time = model must process audio faster than it arrives
 # RTF (Real-Time Factor) < 1.0 means faster than real-time
 
-# VISEME CROSS-FADE: optionally blend neighboring frames around label changes
-viseme_crossfade_enabled = true  # If true, apply cross-fade during post-processing/visualization
-viseme_crossfade_ms = 30         # Cross-fade half-width in milliseconds (0 disables). Typical: 20–60ms
-
-# OVERLAP: allow multiple visemes to be considered active near boundaries in metrics
-viseme_overlap_enabled = true
-viseme_overlap_threshold = 1.0 # 100% overlap threshold
+# Cross-fade is controlled by training.target_crossfade_ms
 
 [hardware]
 # Hardware-specific settings - configure for your computer

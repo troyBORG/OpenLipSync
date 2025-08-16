@@ -111,6 +111,9 @@ class TrainingConfig:
     multi_label: bool = False
     target_crossfade_ms: int = 0
     mask_padded_frames: bool = False
+    # Overlap configuration (moved from evaluation)
+    viseme_overlap_enabled: bool = False
+    viseme_overlap_threshold: float = 0.0
     
     def __post_init__(self):
         """Validate training parameters"""
@@ -144,6 +147,8 @@ class TrainingConfig:
             raise ValueError(f"Invalid early_stopping_metric: {self.early_stopping_metric}")
         if self.target_crossfade_ms < 0:
             raise ValueError(f"target_crossfade_ms must be non-negative, got {self.target_crossfade_ms}")
+        if not 0.0 <= self.viseme_overlap_threshold <= 1.0:
+            raise ValueError(f"viseme_overlap_threshold must be in [0,1], got {self.viseme_overlap_threshold}")
 
 
 @dataclass
@@ -292,6 +297,28 @@ class TrainingConfiguration:
                 f"model.num_visemes ({self.model.num_visemes}) does not match "
                 f"the number of unique visemes in phoneme_viseme_map ({actual_num_visemes})"
             )
+
+        # Unify crossfade: migrate evaluation.viseme_crossfade_ms into training.target_crossfade_ms silently
+        try:
+            eval_ms = int(getattr(self.evaluation, 'viseme_crossfade_ms', 0))
+            train_ms = int(getattr(self.training, 'target_crossfade_ms', 0))
+            if train_ms == 0 and eval_ms > 0:
+                self.training.target_crossfade_ms = eval_ms
+        except Exception:
+            pass
+
+        # Migrate overlap settings from evaluation -> training for backward compatibility
+        try:
+            eval_overlap_enabled = bool(getattr(self.evaluation, 'viseme_overlap_enabled', False))
+            eval_overlap_threshold = float(getattr(self.evaluation, 'viseme_overlap_threshold', 0.0))
+            # Only migrate if training not explicitly enabled
+            if not bool(getattr(self.training, 'viseme_overlap_enabled', False)) and eval_overlap_enabled:
+                self.training.viseme_overlap_enabled = True
+            # Migrate threshold if training is default (0.0) and eval provided > 0
+            if float(getattr(self.training, 'viseme_overlap_threshold', 0.0)) == 0.0 and eval_overlap_threshold > 0.0:
+                self.training.viseme_overlap_threshold = eval_overlap_threshold
+        except Exception:
+            pass
     
     def _load_phoneme_viseme_mapping(self):
         """Load and validate phoneme-to-viseme mapping"""
