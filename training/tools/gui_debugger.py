@@ -9,6 +9,10 @@ import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+import sys
+# Ensure project root is on sys.path so `training` package can be imported when run via Streamlit
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from training.modules.config import load_config, TrainingConfiguration
 from training.modules.data_pipeline import AudioProcessor
 from training.modules.tcn_model import create_model
