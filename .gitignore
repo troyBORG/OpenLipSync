@@ -214,3 +214,5 @@ training/runs/
 #Vscode
 .vscode/
 *.mdc
+
+crossfade_viz.png
