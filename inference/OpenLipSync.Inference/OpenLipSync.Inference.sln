@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenLipSync.Inference", "OpenLipSync.Inference\OpenLipSync.Inference.csproj", "{037EA6A9-1410-42D5-9DE3-7B6B106E68E4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenLipSync.Inference.Test", "OpenLipSync.Inference.Test\OpenLipSync.Inference.Test.csproj", "{00EC944E-FBD6-4158-B5E9-A08EAB0FF40D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{037EA6A9-1410-42D5-9DE3-7B6B106E68E4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{037EA6A9-1410-42D5-9DE3-7B6B106E68E4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{037EA6A9-1410-42D5-9DE3-7B6B106E68E4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{037EA6A9-1410-42D5-9DE3-7B6B106E68E4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{00EC944E-FBD6-4158-B5E9-A08EAB0FF40D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{00EC944E-FBD6-4158-B5E9-A08EAB0FF40D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{00EC944E-FBD6-4158-B5E9-A08EAB0FF40D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{00EC944E-FBD6-4158-B5E9-A08EAB0FF40D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

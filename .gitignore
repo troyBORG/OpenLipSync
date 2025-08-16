@@ -218,3 +218,7 @@ training/runs/
 crossfade_viz.png
 
 export/
+
+.idea/
+obj/
+bin/
