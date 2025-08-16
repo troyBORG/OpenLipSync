@@ -256,12 +256,12 @@ class TemporalConvolutionalNetwork(nn.Module):
         Returns:
             int: Receptive field in frames
         """
+        # Start with 1 frame (current frame)
         receptive_field = 1
-        
+        # Each TemporalConvolutionBlock has two convs with same kernel and dilation
         for layer_idx in range(self.num_layers):
             dilation = 2 ** layer_idx
-            receptive_field += (self.kernel_size - 1) * dilation
-        
+            receptive_field += 2 * (self.kernel_size - 1) * dilation
         return receptive_field
     
     def forward(self, mel_features: torch.Tensor, 
@@ -445,8 +445,12 @@ if __name__ == "__main__":
     # Example usage and testing
     from .config import load_config
     
-    # Load configuration
-    config = load_config("../recipes/tcn_config.toml")
+    # Load configuration (resolve relative to project root if not provided)
+    from pathlib import Path
+    here = Path(__file__).resolve()
+    project_root = here.parents[3] if (here.parents[3] / 'pyproject.toml').exists() else here.parents[2]
+    default_cfg = project_root / 'training' / 'recipes' / 'tcn_config.toml'
+    config = load_config(default_cfg)
     
     # Create model
     model = create_model(config)

@@ -110,6 +110,7 @@ class TrainingConfig:
     specaugment_time_mask_max_ms: int
     multi_label: bool = False
     target_crossfade_ms: int = 0
+    mask_padded_frames: bool = False
     
     def __post_init__(self):
         """Validate training parameters"""
@@ -493,12 +494,17 @@ if __name__ == "__main__":
     # Example usage and testing
     import sys
     
-    if len(sys.argv) != 2:
-        print("Usage: python config.py <config_file.toml>")
-        sys.exit(1)
+    if len(sys.argv) == 2:
+        cfg_path = sys.argv[1]
+    else:
+        # Fallback to default recipe path relative to project root
+        here = Path(__file__).resolve()
+        project_root = here.parents[3] if (here.parents[3] / 'pyproject.toml').exists() else here.parents[2]
+        cfg_path = project_root / 'training' / 'recipes' / 'tcn_config.toml'
+        print(f"No config path provided. Using default: {cfg_path}")
     
     try:
-        config = load_config(sys.argv[1])
+        config = load_config(cfg_path)
         validate_environment(config)
         print("Configuration loaded and validated successfully.")
         print(f"Experiment: {config.experiment.name}")

@@ -129,13 +129,15 @@ class AudioProcessor:
             std = torch.clamp(std, min=1e-8)
             normalized_features = (mel_features - mean) / std
             
-        elif self.audio_config.normalization == "global" and normalization_stats:
+        elif self.audio_config.normalization == "global":
+            if normalization_stats is None:
+                raise RuntimeError("Audio normalization is set to 'global' but no normalization_stats were provided.")
             # Use pre-computed global statistics
             mean = normalization_stats["mean"]
             std = normalization_stats["std"]
             normalized_features = (mel_features - mean) / std
             
-        else:  # "none" or missing global stats
+        else:  # "none"
             normalized_features = mel_features
             
         return normalized_features
@@ -526,10 +528,11 @@ class LibriSpeechDataset(Dataset):
             except Exception as e:
                 print(f"Warning: Failed to process alignment data for {base_name}: {e}")
         
-        # Fall back to text-based alignment if no valid alignment data
+        # If no valid alignment was found, raise an error instead of training on silence
         if phoneme_targets is None or viseme_targets is None:
-            phoneme_targets, viseme_targets = self.phoneme_aligner.align_text(
-                transcript, audio_features.shape[0]
+            raise RuntimeError(
+                f"Missing MFA alignment for sample {base_name} in {self.dataset_dir}. "
+                f"Run alignment (see run_mfa_alignment_prepared.sh) before training."
             )
         
         # Extract metadata from filename (format: speaker-chapter-utterance)

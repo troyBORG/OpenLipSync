@@ -22,6 +22,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional
+from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
@@ -35,7 +36,7 @@ from modules.data_pipeline import create_data_loaders
 from modules.tcn_model import create_model, print_model_summary
 from modules.training_utils import (
     MetricsTracker, LossFunction, EarlyStopping, ModelCheckpoint,
-    create_optimizer, create_scheduler
+    create_optimizer, create_scheduler, compute_class_counts
 )
 from modules.logger import CombinedLogger
 
@@ -114,6 +115,13 @@ class TCNTrainer:
         if resume_from:
             self._resume_from_checkpoint(resume_from)
         
+        # If we're maximizing F1 for early stopping/best model, initialize best to -inf
+        try:
+            if self.config.training.early_stopping_metric == "val_f1":
+                self.best_val_metric = float('-inf')
+        except Exception:
+            pass
+
         self.logger.info("Trainer initialization completed!")
     
     def _initialize_training_components(self):
@@ -128,9 +136,30 @@ class TCNTrainer:
         if self.scheduler:
             self.logger.info(f"Scheduler: {self.config.training.scheduler}")
         
-        # Create loss function
-        # TODO: In a real implementation, you'd compute class counts from data
-        self.loss_function = LossFunction(self.config)
+        # Create loss function (optionally with class weighting)
+        class_counts = None
+        if getattr(self.config.training, "class_weighting", False):
+            from modules.training_utils import load_class_counts_cache, save_class_counts_cache
+            cached = load_class_counts_cache(self.config)
+            if cached is not None:
+                class_counts = cached
+                self.logger.info("Loaded cached class counts for class weighting.")
+            else:
+                self.logger.info("Computing class counts for class weighting... (one pass over training data)")
+                class_counts = compute_class_counts(
+                    train_loader=self.train_loader,
+                    num_classes=self.config.model.num_visemes,
+                    multi_label=bool(getattr(self.config.training, "multi_label", False)),
+                    mask_padded=bool(getattr(self.config.training, "mask_padded_frames", False))
+                )
+                # Basic validation before caching
+                if not isinstance(class_counts, dict) or len(class_counts) != self.config.model.num_visemes:
+                    raise RuntimeError("Class weighting requested but class count computation returned invalid result.")
+                if sum(int(v) for v in class_counts.values()) <= 0:
+                    raise RuntimeError("Class weighting requested but computed zero total frames across classes.")
+                save_class_counts_cache(self.config, class_counts)
+            self.logger.info(f"Class counts: {class_counts}")
+        self.loss_function = LossFunction(self.config, class_counts=class_counts)
         
         # Initialize mixed precision training
         self.scaler = GradScaler() if self.use_mixed_precision else None
@@ -151,14 +180,13 @@ class TCNTrainer:
         )
 
     def _apply_viseme_crossfade(self, predictions: torch.Tensor) -> torch.Tensor:
-        """Optionally apply temporal cross-fade smoothing on per-frame class probabilities.
+        """Optionally apply temporal cross-fade smoothing on per-frame class probabilities for metrics.
 
-        The smoothing is applied only for metric computation/visualization, never for loss.
+        Uses a SINGLE unified configuration value: training.target_crossfade_ms.
+        If set to 0, no cross-fade is applied. This mirrors the boundary softening used for targets.
         """
         try:
-            if not self.config.evaluation.viseme_crossfade_enabled:
-                return predictions
-            ms = int(getattr(self.config.evaluation, "viseme_crossfade_ms", 0))
+            ms = int(getattr(self.config.training, "target_crossfade_ms", 0))
             if ms <= 0:
                 return predictions
             # Convert half-width milliseconds to frames (round to nearest)
@@ -229,6 +257,8 @@ class TCNTrainer:
         epoch_start_time = time.time()
         batch_times = []
         data_times = []
+        total_train_loss = 0.0
+        num_batches = 0
         
         for batch_idx, batch in enumerate(self.train_loader):
             batch_start_time = time.time()
@@ -245,10 +275,10 @@ class TCNTrainer:
             if self.scaler:
                 with autocast(device_type=self.device_type):
                     predictions = self.model(audio_features, sequence_lengths)
-                    loss = self.loss_function(predictions, viseme_targets)
+                    loss = self.loss_function(predictions, viseme_targets, sequence_lengths)
             else:
                 predictions = self.model(audio_features, sequence_lengths)
-                loss = self.loss_function(predictions, viseme_targets)
+                loss = self.loss_function(predictions, viseme_targets, sequence_lengths)
             
             # Backward pass
             self.optimizer.zero_grad()
@@ -268,6 +298,8 @@ class TCNTrainer:
             # Update metrics (optionally apply cross-fade smoothing for metrics only)
             preds_for_metrics = self._apply_viseme_crossfade(predictions)
             self.train_metrics.update(preds_for_metrics, viseme_targets, sequence_lengths)
+            total_train_loss += loss.item()
+            num_batches += 1
             
             # Calculate timing
             batch_time = time.time() - batch_start_time
@@ -275,13 +307,25 @@ class TCNTrainer:
             
             # Log training step
             current_lr = self.optimizer.param_groups[0]['lr']
+            # Compute done/total samples for the current epoch
+            samples_done = None
+            samples_total = None
+            try:
+                steps_per_epoch = len(self.train_loader)
+                batch_idx_in_epoch = (self.global_step % steps_per_epoch)
+                samples_done = (batch_idx_in_epoch + 1) * self.config.training.batch_size
+                samples_total = steps_per_epoch * self.config.training.batch_size
+            except Exception:
+                pass
             self.logger.log_training_step(
                 step=self.global_step,
                 loss=loss.item(),
                 learning_rate=current_lr,
                 batch_time=batch_time,
                 data_time=data_time,
-                optimizer=self.optimizer
+                optimizer=self.optimizer,
+                samples_done=samples_done,
+                samples_total=samples_total
             )
             
             # Save checkpoint periodically
@@ -297,6 +341,8 @@ class TCNTrainer:
         
         # Compute epoch metrics
         epoch_metrics = self.train_metrics.compute()
+        # Also track average training loss for the epoch for checkpoint metadata
+        epoch_metrics['loss'] = (total_train_loss / num_batches) if num_batches > 0 else float('nan')
         epoch_time = time.time() - epoch_start_time
         
         # Add timing metrics
@@ -319,6 +365,7 @@ class TCNTrainer:
         total_val_loss = 0.0
         num_batches = 0
         
+        amp_ctx = autocast(device_type=self.device_type) if self.device_type == "cuda" else nullcontext()
         with torch.no_grad():
             for batch in self.val_loader:
                 # Move data to device
@@ -327,13 +374,9 @@ class TCNTrainer:
                 sequence_lengths = batch['lengths'].to(self.device)
                 
                 # Forward pass
-                if self.scaler:
-                    with autocast(device_type=self.device_type):
-                        predictions = self.model(audio_features, sequence_lengths)
-                        loss = self.loss_function(predictions, viseme_targets)
-                else:
+                with (autocast(device_type=self.device_type) if self.device_type == "cuda" else nullcontext()):
                     predictions = self.model(audio_features, sequence_lengths)
-                    loss = self.loss_function(predictions, viseme_targets)
+                    loss = self.loss_function(predictions, viseme_targets, sequence_lengths)
                 
                 # Update metrics (optionally apply cross-fade smoothing for metrics only)
                 preds_for_metrics = self._apply_viseme_crossfade(predictions)
@@ -343,7 +386,7 @@ class TCNTrainer:
         
         # Compute validation metrics
         val_metrics = self.val_metrics.compute()
-        val_metrics['loss'] = total_val_loss / num_batches
+        val_metrics['loss'] = (total_val_loss / num_batches) if num_batches > 0 else float('nan')
         
         return val_metrics
     
@@ -410,11 +453,12 @@ class TCNTrainer:
                 metric_name = self.config.training.early_stopping_metric
                 if metric_name == "val_loss":
                     current_val_metric = val_metrics["loss"]
+                    is_best = current_val_metric < self.best_val_metric
                 elif metric_name == "val_f1":
                     current_val_metric = val_metrics["macro_f1"]
+                    is_best = current_val_metric > self.best_val_metric
                 else:
                     raise ValueError(f"Unsupported early_stopping_metric: {metric_name}")
-                is_best = current_val_metric < self.best_val_metric
                 
                 if is_best:
                     self.best_val_metric = current_val_metric
@@ -491,8 +535,9 @@ class TCNTrainer:
                 viseme_targets = batch['targets'].to(self.device)
                 sequence_lengths = batch['lengths'].to(self.device)
                 
-                predictions = self.model(audio_features, sequence_lengths)
-                loss = self.loss_function(predictions, viseme_targets)
+                with (autocast(device_type=self.device_type) if self.device_type == "cuda" else nullcontext()):
+                    predictions = self.model(audio_features, sequence_lengths)
+                    loss = self.loss_function(predictions, viseme_targets, sequence_lengths)
                 
                 preds_for_metrics = self._apply_viseme_crossfade(predictions)
                 test_metrics.update(preds_for_metrics, viseme_targets, sequence_lengths)
@@ -501,7 +546,7 @@ class TCNTrainer:
         
         # Compute final test metrics
         final_test_metrics = test_metrics.compute()
-        final_test_metrics['loss'] = total_test_loss / num_batches
+        final_test_metrics['loss'] = (total_test_loss / num_batches) if num_batches > 0 else float('nan')
         
         # Log test results
         self.logger.info("\nTest Results:")

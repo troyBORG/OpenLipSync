@@ -171,7 +171,8 @@ class TrainingLogger:
         self.info("-" * 40)
     
     def log_training_step(self, step: int, loss: float, learning_rate: float, 
-                         batch_time: float, data_time: float):
+                         batch_time: float, data_time: float, 
+                         samples_done: Optional[int] = None, samples_total: Optional[int] = None):
         """
         Log training step information
         
@@ -181,6 +182,7 @@ class TrainingLogger:
             learning_rate: Current learning rate
             batch_time: Time taken for this batch
             data_time: Time taken for data loading
+            samples_left: Optional count of samples remaining in the current epoch
         """
         self.current_step = step
         
@@ -188,14 +190,16 @@ class TrainingLogger:
             # Calculate timing statistics
             samples_per_sec = self.config.training.batch_size / batch_time
             
-            self.info(
+            message = (
                 f"Step {step:6d} | "
-                f"Loss: {loss:.4f} | "
-                f"LR: {learning_rate:.2e} | "
-                f"Batch: {batch_time:.3f}s | "
-                f"Data: {data_time:.3f}s | "
-                f"Rate: {samples_per_sec:.1f} samples/s"
+                f"loss {loss:.4f} | "
+                f"lr {learning_rate:.2e} | "
+                f"{batch_time:.3f}s | "
+                f"{samples_per_sec:.1f}/s"
             )
+            if (samples_done is not None) and (samples_total is not None):
+                message += f" | {samples_done}/{samples_total}"
+            self.info(message)
     
     def log_epoch_summary(self, epoch: int, train_metrics: Dict[str, float], 
                          val_metrics: Dict[str, float], epoch_time: float):
@@ -489,9 +493,8 @@ class TensorBoardLogger:
             
             plt.close(fig)
             
-        except ImportError:
-            # matplotlib not available, skip confusion matrix logging
-            pass
+        except ImportError as e:
+            raise RuntimeError("TensorBoard image logging requested but matplotlib is not installed.") from e
         except Exception as e:
             print(f"Warning: Could not log confusion matrix: {e}")
     
@@ -606,10 +609,12 @@ class CombinedLogger:
     
     def log_training_step(self, step: int, loss: float, learning_rate: float,
                          batch_time: float, data_time: float, 
-                         optimizer: Optional[torch.optim.Optimizer] = None):
+                         optimizer: Optional[torch.optim.Optimizer] = None,
+                         samples_done: Optional[int] = None,
+                         samples_total: Optional[int] = None):
         """Log training step to both loggers"""
         # Console/file logging
-        self.training_logger.log_training_step(step, loss, learning_rate, batch_time, data_time)
+        self.training_logger.log_training_step(step, loss, learning_rate, batch_time, data_time, samples_done=samples_done, samples_total=samples_total)
         
         # TensorBoard logging - group related metrics together
         self.tensorboard_logger.log_scalars(

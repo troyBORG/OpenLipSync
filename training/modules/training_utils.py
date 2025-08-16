@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Union
 from collections import defaultdict, deque
 import time
+import hashlib
+from tqdm.auto import tqdm
 
 import numpy as np
 import torch
@@ -510,6 +512,8 @@ class LossFunction:
         self.config = config
         self.loss_type = config.training.loss_type
         self.class_weighting = config.training.class_weighting
+        if self.class_weighting and class_counts is None:
+            raise RuntimeError("Class weighting enabled but class_counts not provided. Compute or load counts before constructing LossFunction.")
         
         # Compute class weights if requested
         class_weights = None
@@ -559,7 +563,7 @@ class LossFunction:
         
         return weights
     
-    def __call__(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def __call__(self, predictions: torch.Tensor, targets: torch.Tensor, sequence_lengths: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Compute loss
         
@@ -572,6 +576,7 @@ class LossFunction:
         """
         if self.loss_type == "cross_entropy":
             batch_size, time_steps, num_classes = predictions.shape
+            mask_padded = bool(getattr(self.config.training, "mask_padded_frames", False))
             if self.config.training.multi_label:
                 # Targets expected as multi-hot per frame: (B, T, C)
                 # If provided as (B, T) indices, convert to one-hot
@@ -581,16 +586,151 @@ class LossFunction:
                     targets = targets.float()
                 else:
                     raise ValueError("Multi-label training expects targets of shape (B,T) or (B,T,C)")
-                preds_flat = predictions.reshape(-1, num_classes)
-                targets_flat = targets.reshape(-1, num_classes)
-                return self.criterion(preds_flat, targets_flat)
+                if mask_padded and sequence_lengths is not None:
+                    device = predictions.device
+                    valid_mask_bt = (torch.arange(time_steps, device=device).unsqueeze(0).expand(batch_size, -1)
+                                     < sequence_lengths.to(device).unsqueeze(1))  # (B,T)
+                    preds_flat = predictions.reshape(batch_size * time_steps, num_classes)
+                    targets_flat = targets.reshape(batch_size * time_steps, num_classes)
+                    valid_flat = valid_mask_bt.reshape(batch_size * time_steps)
+                    # Guard in case mask is empty
+                    if valid_flat.any():
+                        preds_flat = preds_flat[valid_flat]
+                        targets_flat = targets_flat[valid_flat]
+                    return self.criterion(preds_flat, targets_flat)
+                else:
+                    preds_flat = predictions.reshape(-1, num_classes)
+                    targets_flat = targets.reshape(-1, num_classes)
+                    return self.criterion(preds_flat, targets_flat)
             # Single-label cross entropy path
-            predictions_flat = predictions.view(-1, num_classes)
-            targets_flat = targets.view(-1)
-            return self.criterion(predictions_flat, targets_flat)
+            if mask_padded and sequence_lengths is not None:
+                device = predictions.device
+                valid_mask_bt = (torch.arange(time_steps, device=device).unsqueeze(0).expand(batch_size, -1)
+                                 < sequence_lengths.to(device).unsqueeze(1))  # (B,T)
+                predictions_flat = predictions.view(batch_size * time_steps, num_classes)
+                targets_flat = targets.view(batch_size * time_steps)
+                valid_flat = valid_mask_bt.reshape(batch_size * time_steps)
+                if valid_flat.any():
+                    predictions_flat = predictions_flat[valid_flat]
+                    targets_flat = targets_flat[valid_flat]
+                return self.criterion(predictions_flat, targets_flat)
+            else:
+                predictions_flat = predictions.view(-1, num_classes)
+                targets_flat = targets.view(-1)
+                return self.criterion(predictions_flat, targets_flat)
         
         else:  # focal_loss
+            if self.config.training.multi_label:
+                # Convert to BCE-style focal loss for multi-label if needed
+                num_classes = predictions.size(-1)
+                if targets.dim() == 2:
+                    targets = F.one_hot(targets, num_classes=num_classes).float()
+                elif targets.dim() == 3 and targets.size(-1) == num_classes:
+                    targets = targets.float()
+                else:
+                    raise ValueError("Multi-label focal_loss expects targets of shape (B,T) or (B,T,C)")
+                preds_flat = predictions.reshape(-1, num_classes)
+                targets_flat = targets.reshape(-1, num_classes)
+                probs = torch.sigmoid(preds_flat)
+                pt = probs * targets_flat + (1 - probs) * (1 - targets_flat)
+                alpha = float(self.config.training.focal_loss_alpha)
+                gamma = float(self.config.training.focal_loss_gamma)
+                focal = (alpha * (1 - pt) ** gamma) * F.binary_cross_entropy_with_logits(
+                    preds_flat, targets_flat, reduction='none'
+                )
+                return focal.mean()
             return self.criterion(predictions, targets)
+
+
+def compute_class_counts(train_loader, num_classes: int, multi_label: bool, mask_padded: bool = True) -> Dict[int, int]:
+    """One-pass computation of class counts over the training data.
+
+    Counts valid frames only (excludes padding when lengths are provided).
+    Prints lightweight progress as 'done/total'.
+    """
+    counts = {i: 0 for i in range(num_classes)}
+    total = len(train_loader)
+    with torch.no_grad():
+        for batch in tqdm(train_loader, total=total, desc="Class count", unit="batch", leave=False):
+            targets = batch['targets']  # (B,T) or (B,T,C)
+            lengths = batch.get('lengths', None)
+            if multi_label:
+                # Expect (B,T,C). If (B,T), convert to one-hot.
+                if targets.dim() == 2:
+                    targets = F.one_hot(targets, num_classes=num_classes).to(torch.float32)
+                if mask_padded and lengths is not None:
+                    B, T, C = targets.shape
+                    mask = torch.arange(T).unsqueeze(0) < lengths.unsqueeze(1)
+                    mask = mask.unsqueeze(-1).expand(B, T, C)
+                    targets = targets * mask
+                # Sum positives per class
+                cls_sum = targets.sum(dim=(0, 1))  # (C,)
+                for i in range(num_classes):
+                    counts[i] += int(cls_sum[i].item())
+            else:
+                # Single-label (B,T)
+                if mask_padded and lengths is not None:
+                    B, T = targets.shape
+                    mask = torch.arange(T).unsqueeze(0) < lengths.unsqueeze(1)
+                    targets = torch.where(mask, targets, torch.zeros_like(targets))
+                flat = targets.view(-1)
+                hist = torch.bincount(flat, minlength=num_classes)
+                for i in range(num_classes):
+                    counts[i] += int(hist[i].item())
+    return counts
+
+
+def _class_count_cache_key(config: TrainingConfiguration) -> str:
+    """Build a deterministic key for class-count caching based on data and labeling config."""
+    payload = {
+        'dataset': config.data.dataset,
+        'splits': config.data.splits,
+        'val': config.data.val_split,
+        'test': config.data.test_split,
+        'num_visemes': config.model.num_visemes,
+        'multi_label': bool(getattr(config.training, 'multi_label', False)),
+        'target_crossfade_ms': int(getattr(config.training, 'target_crossfade_ms', 0)),
+        'phoneme_viseme_map': str(config.data.phoneme_viseme_map),
+        'fps': float(config.audio.fps),
+    }
+    blob = json.dumps(payload, sort_keys=True).encode('utf-8')
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def get_class_count_cache_path(config: TrainingConfiguration) -> Path:
+    """Return a stable cache file path for class counts under dataset cache.
+
+    Location: <project_root>/training/data/cache/class_counts/counts_<key>.json
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    cache_dir = project_root / 'training' / 'data' / 'cache' / 'class_counts'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = _class_count_cache_key(config)
+    return cache_dir / f"counts_{key}.json"
+
+
+def load_class_counts_cache(config: TrainingConfiguration) -> Optional[Dict[int, int]]:
+    """Load cached class counts if present."""
+    path = get_class_count_cache_path(config)
+    if path.exists():
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            # Ensure keys are int
+            return {int(k): int(v) for k, v in data.items()}
+        except Exception:
+            return None
+    return None
+
+
+def save_class_counts_cache(config: TrainingConfiguration, counts: Dict[int, int]) -> None:
+    """Save class counts to cache for reuse in subsequent runs."""
+    path = get_class_count_cache_path(config)
+    try:
+        with open(path, 'w') as f:
+            json.dump({int(k): int(v) for k, v in counts.items()}, f)
+    except Exception:
+        pass
 
 
 class EarlyStopping:
@@ -885,7 +1025,8 @@ def create_scheduler(optimizer: torch.optim.Optimizer, config: TrainingConfigura
         )
     
     elif scheduler_name == "constant":
-        scheduler = ConstantLR(optimizer, factor=1.0)
+        # Truly constant learning rate: do not create a scheduler
+        scheduler = None
     
     else:
         raise ValueError(f"Unknown scheduler: {scheduler_name}")

@@ -139,6 +139,9 @@ specaugment_enabled = true  # Randomly mask parts of the spectrogram
 specaugment_time_mask_max_ms = 20  # Max audio to mask
 # This teaches the model to handle missing/corrupted audio segments
 
+mask_padded_frames = true  # Mask padded frames in loss calculation
+
+
 [data]
 # Data pipeline parameters - what data to use and how to process it
 
