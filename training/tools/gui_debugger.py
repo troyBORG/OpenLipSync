@@ -185,7 +185,12 @@ def run_model_on_mel(
     with torch.no_grad():
         x = torch.from_numpy(mel).float().unsqueeze(0).to(config.hardware.device)
         logits = model(x)
-        probs = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()  # (T, C)
+        # Respect training mode: multi-label uses sigmoid; single-label uses softmax
+        if bool(getattr(config.training, "multi_label", False)):
+            probs_t = torch.sigmoid(logits)
+        else:
+            probs_t = torch.softmax(logits, dim=-1)
+        probs = probs_t.squeeze(0).cpu().numpy()  # (T, C)
         preds = np.argmax(probs, axis=-1)
     # Ensure model outputs align with mel length
     t_mel = mel.shape[0]
@@ -238,18 +243,21 @@ def median_filter_preds(preds: np.ndarray, window_size: int) -> np.ndarray:
     return out
 
 
-def sanitize_probs(probs: np.ndarray, silence_index: Optional[int] = None) -> np.ndarray:
+def sanitize_probs(probs: np.ndarray, silence_index: Optional[int] = None, multi_label: bool = False) -> np.ndarray:
     """Clean up model probabilities before smoothing.
 
     - Replace NaN/Inf with 0
     - Clip to [0, 1]
-    - Renormalize each frame to sum to 1
-    - If a frame sums to 0, set one-hot to `silence_index` if provided, otherwise uniform
+    - For single-label: renormalize each frame to sum to 1; if a frame sums to 0, set one-hot to `silence_index` if provided, otherwise uniform
+    - For multi-label: do not renormalize (allow multiple visemes); just return clipped values
     """
     if probs is None or probs.size == 0:
         return probs
     cleaned = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
     cleaned = np.clip(cleaned, 0.0, 1.0)
+    if bool(multi_label):
+        # Keep independent probabilities; no per-frame renormalization
+        return cleaned
     row_sums = cleaned.sum(axis=1)
     bad_rows = ~np.isfinite(row_sums) | (row_sums <= 0.0)
     if np.any(bad_rows):
@@ -798,7 +806,11 @@ def main():
         # Sanitize probabilities to handle NaN/Inf/noise before smoothing
         silence_idx = 0  # per viseme map, 0 == silence
         if probs is not None:
-            probs = sanitize_probs(probs, silence_index=silence_idx)
+            probs = sanitize_probs(
+                probs,
+                silence_index=silence_idx,
+                multi_label=bool(getattr(run_cfg.training, "multi_label", False)),
+            )
             preds = np.argmax(probs, axis=-1)
 
             # Optional sharpen -> threshold -> renormalize (pre-smoothing)
