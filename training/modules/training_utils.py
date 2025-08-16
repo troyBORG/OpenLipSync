@@ -71,7 +71,10 @@ class FrameAccuracy:
             targets: Ground truth targets, shape (batch, time)
             sequence_lengths: Actual sequence lengths, shape (batch,)
         """
-        if self.overlap_enabled:
+        # Use multilabel/overlap semantics when either overlap is enabled
+        # or we are training in multi-label mode. This avoids mismatches
+        # when targets are (B,T,C) but overlap is disabled.
+        if self.overlap_enabled or self.multi_label:
             # Guard: if predictions don't look like (B, T, C) with C > 1, fall back to single-label
             if predictions.ndim != 3 or predictions.shape[-1] <= 1:
                 predicted_classes = torch.argmax(predictions, dim=-1)

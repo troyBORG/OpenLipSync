@@ -166,88 +166,6 @@ class PhonemeAligner:
                 self.viseme_to_phonemes[viseme] = []
             self.viseme_to_phonemes[viseme].append(phoneme)
     
-    def align_phonemes_to_frames(self, phoneme_sequence: List[str], 
-                               phoneme_timestamps: List[Tuple[float, float]], 
-                               audio_duration: float) -> torch.Tensor:
-        """
-        Convert phoneme sequence with timestamps to frame-level viseme targets
-        
-        Args:
-            phoneme_sequence: List of phoneme symbols
-            phoneme_timestamps: List of (start_time, end_time) for each phoneme
-            audio_duration: Total duration of audio in seconds
-            
-        Returns:
-            torch.Tensor: Frame-level viseme targets, shape (time_frames,) or (time_frames, C) if multi_label
-        """
-        # Calculate number of frames
-        num_frames = int(audio_duration * self.config.audio.fps)
-        frame_duration = 1.0 / self.config.audio.fps
-        
-        num_classes = self.config.model.num_visemes
-        is_multi = bool(getattr(self.config.training, "multi_label", False))
-        target_crossfade_ms = int(getattr(self.config.training, "target_crossfade_ms", 0))
-        crossfade_frames = int(round((target_crossfade_ms / 1000.0) * self.config.audio.fps)) if target_crossfade_ms > 0 else 0
-
-        if is_multi:
-            viseme_targets = torch.zeros(num_frames, num_classes, dtype=torch.float32)
-            silence_idx = 0
-            viseme_targets[:, silence_idx] = 1.0
-        else:
-            # Initialize with silence (viseme 0)
-            viseme_targets = torch.zeros(num_frames, dtype=torch.long)
-        
-        # Fill in viseme targets based on phoneme timestamps
-        for phoneme, (start_time, end_time) in zip(phoneme_sequence, phoneme_timestamps):
-            # Convert phoneme to viseme
-            viseme_id = self.phoneme_to_viseme.get(phoneme, 0)  # Default to silence
-            
-            # Calculate frame indices
-            start_frame = int(start_time * self.config.audio.fps)
-            end_frame = int(end_time * self.config.audio.fps)
-            
-            # Ensure frames are within bounds
-            start_frame = max(0, start_frame)
-            end_frame = min(num_frames, end_frame)
-            
-            # Assign viseme to frames
-            if start_frame < end_frame:
-                if is_multi:
-                    # Clear default silence
-                    viseme_targets[start_frame:end_frame, :] = 0.0
-                    viseme_targets[start_frame:end_frame, viseme_id] = 1.0
-                else:
-                    viseme_targets[start_frame:end_frame] = viseme_id
-        
-        # Apply boundary-aware soft targets for multi-label
-        if is_multi and crossfade_frames > 0:
-            # Build a binary hard label timeline first to locate transitions
-            hard = torch.argmax(viseme_targets, dim=-1)  # (T,)
-            transitions: List[int] = []
-            prev = int(hard[0].item()) if num_frames > 0 else 0
-            for t in range(1, num_frames):
-                cur = int(hard[t].item())
-                if cur != prev:
-                    transitions.append(t)
-                prev = cur
-            # For each transition, create a symmetric linear ramp from prev->cur over ±crossfade_frames
-            for t0 in transitions:
-                a = int(hard[max(0, t0 - 1)].item())  # class before boundary
-                b = int(hard[min(num_frames - 1, t0)].item())  # class after boundary
-                start = max(0, t0 - crossfade_frames)
-                end = min(num_frames, t0 + crossfade_frames)
-                for t in range(start, end):
-                    # r in [0,1] centered at boundary
-                    if t < t0:
-                        r = (t - start) / max(1, (t0 - start))
-                    else:
-                        r = 1.0 - (t - t0) / max(1, (end - t0))
-                    # Blend a and b; keep others at 0
-                    base = torch.zeros(num_classes, dtype=torch.float32)
-                    base[a] = 1.0 - float(r)
-                    base[b] = float(r)
-                    viseme_targets[t, :] = base
-        return viseme_targets
     
     def get_phoneme_index(self, phoneme: str) -> int:
         """Get the index for a phoneme (for now, just return 0 as placeholder)"""
@@ -579,9 +497,11 @@ class LibriSpeechDataset(Dataset):
             # Initialize targets
             phoneme_targets = torch.zeros(target_frames, dtype=torch.long)
             num_classes = self.config.model.num_visemes
-            if bool(getattr(self.config.training, "multi_label", False)):
+            multi = bool(getattr(self.config.training, "multi_label", False))
+            target_crossfade_ms = int(getattr(self.config.training, "target_crossfade_ms", 0))
+            crossfade_frames = int(round((target_crossfade_ms / 1000.0) * self.config.audio.fps)) if target_crossfade_ms > 0 else 0
+            if multi:
                 viseme_targets = torch.zeros(target_frames, num_classes, dtype=torch.float32)
-                viseme_targets[:, 0] = 1.0  # default silence
             else:
                 viseme_targets = torch.zeros(target_frames, dtype=torch.long)
             
@@ -603,11 +523,31 @@ class LibriSpeechDataset(Dataset):
                     # Set targets for this interval
                     phoneme_targets[start_frame:end_frame] = phoneme_idx
                     if viseme_targets.dim() == 2:
-                        viseme_targets[start_frame:end_frame, :] = 0.0
+                        # Independent per-class assignment with symmetric crossfade
                         viseme_targets[start_frame:end_frame, viseme_idx] = 1.0
+                        if crossfade_frames > 0:
+                            lead_start = max(0, start_frame - crossfade_frames)
+                            lead_len = start_frame - lead_start
+                            if lead_len > 0:
+                                alpha = torch.linspace(0.0, 1.0, steps=lead_len, dtype=torch.float32)
+                                viseme_targets[lead_start:start_frame, viseme_idx] = torch.maximum(
+                                    viseme_targets[lead_start:start_frame, viseme_idx], alpha
+                                )
+                            tail_end = min(target_frames, end_frame + crossfade_frames)
+                            tail_len = tail_end - end_frame
+                            if tail_len > 0:
+                                alpha = torch.linspace(1.0, 0.0, steps=tail_len, dtype=torch.float32)
+                                viseme_targets[end_frame:tail_end, viseme_idx] = torch.maximum(
+                                    viseme_targets[end_frame:tail_end, viseme_idx], alpha
+                                )
                     else:
                         viseme_targets[start_frame:end_frame] = viseme_idx
             
+            # For multi-label, set silence where no other viseme active
+            if viseme_targets.dim() == 2 and num_classes > 0:
+                non_silence = viseme_targets[:, 1:].sum(dim=-1) if num_classes > 1 else torch.zeros(target_frames)
+                silence_active = (non_silence <= 0.0).to(viseme_targets.dtype)
+                viseme_targets[:, 0] = torch.maximum(viseme_targets[:, 0], silence_active)
             return phoneme_targets, viseme_targets
             
         except Exception as e:

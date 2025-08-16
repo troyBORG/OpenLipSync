@@ -152,9 +152,16 @@ mask_padded_frames = true  # Mask padded frames in loss calculation
 # DATASET: LibriSpeech is a large, free speech dataset
 dataset = "librispeech"
 
-#splits = ["train-clean-100", "train-clean-360", "train-other-500"]
-#splits = ["train-clean-100"]
-splits = ["train-clean-100","train-clean-360"]
+#splits = ["dev-clean"] #For quick testing
+
+splits = ["train-clean-100"] #For training
+
+
+#splits = ["train-clean-360"] #For training, slow
+#splits = ["train-clean-100","train-clean-360"] #For training, slow
+#splits = ["train-clean-100", "train-clean-360", "train-other-500"] #For training, very slow
+
+
 # train-clean-100: [~6GB] 100h of clean speech (start here for testing)
 # train-clean-360: [~23GB] 360h of clean speech
 # train-other-500: [~30GB] 500h of varied/noisy speech
@@ -262,9 +269,9 @@ image_log_interval = 500        # Log images every N steps (if enabled)
 [experiment]
 # Experiment tracking - organize your training runs
 
-name = "tcn_cf_overlap_multi_label_100_8s_2s"                              # Name for this experiment
+name = "tcn_new_cf_implementation"                              # Name for this experiment
 tags = ["tcn", "viseme", "100fps"]               # Tags to find related experiments
-notes = "TCN model with viseme crossfade and overlap multi-label 1.00, 8s max chunk, 2s min chunk"  # Description of what you're testing
+notes = "TCN model with viseme crossfade and overlap multi-label"  # Description of what you're testing
 
 # TIP: Change the name for each experiment so you can compare results
 # Example names: "tcn_more_layers", "tcn_50fps", "tcn_focal_loss"
