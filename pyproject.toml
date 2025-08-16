@@ -21,3 +21,6 @@ gui = [
     "streamlit",
     "plotly",
 ]
+export = [
+    "onnx",
+]

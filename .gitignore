@@ -216,3 +216,5 @@ training/runs/
 *.mdc
 
 crossfade_viz.png
+
+export/
