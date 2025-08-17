@@ -55,7 +55,13 @@ public sealed class OVRLipSyncContext : IDisposable
         }
         else
         {
-            Array.Clear(analysis, 0, analysis.Length);
+            // Preserve previous frame to avoid flicker on transient failures
+            int n = Math.Min(Frame.VisemeCount, analysis.Length);
+            for (int i = 0; i < n; i++)
+                analysis[i] = _frame.Visemes[i];
+
+            if (analysis.Length > Frame.VisemeCount)
+                analysis[Frame.VisemeCount] = _frame.laughterScore;
         }
 
         onDone?.Invoke();

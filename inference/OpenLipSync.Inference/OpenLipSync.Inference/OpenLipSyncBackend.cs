@@ -28,6 +28,10 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
     private int _inputSampleRate;
     private bool _initialized;
     private bool _disposed;
+    
+    // Cached model properties to avoid per-frame checks
+    private bool _isMultiLabel;
+    private int _numVisemes = Frame.VisemeCount;
 
     public bool IsInitialized => _initialized;
     public int SampleRate => _inputSampleRate;
@@ -208,35 +212,76 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
     {
         try
         {
-            // Look for model files in standard locations
+            // Look for model files, preferring override via environment variable first
             var modelPaths = new[]
             {
                 "model.onnx",
                 "model/model.onnx",
-                "export/model.onnx",
-
-                #if DEBUG //Test model paths for debugging
-                Path.Combine("export", "tcn_new_cf_implementation_2025-08-16_12-49-05", "model.onnx"),
-                Path.Combine("..", "..", "..", "..", "..", "export", "tcn_new_cf_implementation_2025-08-16_12-49-05", "model.onnx"),
-                "/home/kyuubi/Repos/OpenLipSync/export/tcn_new_cf_implementation_2025-08-16_12-49-05/model.onnx"
-                #endif
+                "export/model.onnx"
             };
 
             string? modelPath = null;
             string? configPath = null;
 
-            foreach (var path in modelPaths)
+            // Environment override (file or directory)
+            var envOverride = Environment.GetEnvironmentVariable("OPENLIPSYNC_MODEL_PATH");
+            if (!string.IsNullOrWhiteSpace(envOverride))
             {
-                if (File.Exists(path))
+                try
                 {
-                    modelPath = path;
-                    var dir = Path.GetDirectoryName(path) ?? "";
-                    var potentialConfigPath = Path.Combine(dir, "config.json");
-                    if (File.Exists(potentialConfigPath))
+                    if (File.Exists(envOverride))
                     {
-                        configPath = potentialConfigPath;
+                        modelPath = envOverride;
+                        var dir = Path.GetDirectoryName(envOverride) ?? "";
+                        var potentialConfigPath = Path.Combine(dir, "config.json");
+                        if (File.Exists(potentialConfigPath))
+                        {
+                            configPath = potentialConfigPath;
+                        }
                     }
-                    break;
+                    else if (Directory.Exists(envOverride))
+                    {
+                        var candidates = new[]
+                        {
+                            Path.Combine(envOverride, "model.onnx"),
+                            Path.Combine(envOverride, "model", "model.onnx"),
+                            Path.Combine(envOverride, "export", "model.onnx"),
+                        };
+                        foreach (var p in candidates)
+                        {
+                            if (File.Exists(p))
+                            {
+                                modelPath = p;
+                                var dir = Path.GetDirectoryName(p) ?? "";
+                                var potentialConfigPath = Path.Combine(dir, "config.json");
+                                if (File.Exists(potentialConfigPath))
+                                {
+                                    configPath = potentialConfigPath;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch { /* ignore and fall back */ }
+            }
+
+            // Fallback: search standard locations in working directory tree
+            if (modelPath == null)
+            {
+                foreach (var path in modelPaths)
+                {
+                    if (File.Exists(path))
+                    {
+                        modelPath = path;
+                        var dir = Path.GetDirectoryName(path) ?? "";
+                        var potentialConfigPath = Path.Combine(dir, "config.json");
+                        if (File.Exists(potentialConfigPath))
+                        {
+                            configPath = potentialConfigPath;
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -260,13 +305,21 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
                     
                     // Log the sample rate from config
                     System.Diagnostics.Debug.WriteLine($"Model expects {_audioConfig.SampleRate}Hz (from config)");
+                    
+                    // Cache flags and constants for runtime
+                    _isMultiLabel = _modelConfig.training?.multi_label ?? false;
+                    _numVisemes = _modelConfig.model?.num_visemes ?? Frame.VisemeCount;
                 }
             }
 
-            // Create ONNX session with CPU provider (for compatibility)
+            // Create ONNX session with CPU provider
             var sessionOptions = new SessionOptions();
             sessionOptions.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_WARNING;
-            
+            sessionOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
+            sessionOptions.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
+            sessionOptions.InterOpNumThreads = 1;
+            sessionOptions.IntraOpNumThreads = 1;
+
             _onnxSession = new InferenceSession(modelPath, sessionOptions);
 
             System.Diagnostics.Debug.WriteLine($"Loaded OpenLipSync model: {modelPath}");
@@ -304,17 +357,15 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
             // Extract output tensor: [batch=1, time=1, classes=num_visemes]
             var outputTensor = results.First().AsTensor<float>();
             
-            // Get number of visemes from model config
-            int numVisemes = _modelConfig?.model?.num_visemes ?? Frame.VisemeCount;
-            
-            // Convert logits to probabilities using softmax
+            // Read logits
+            int numVisemes = _numVisemes;
             var logits = new float[numVisemes];
             for (int i = 0; i < numVisemes; i++)
             {
                 logits[i] = outputTensor[0, 0, i];
             }
 
-            return Softmax(logits);
+            return _isMultiLabel ? Sigmoid(logits) : Softmax(logits);
         }
         catch (Exception ex)
         {
@@ -351,6 +402,18 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
             }
         }
 
+        return probs;
+    }
+
+    private static float[] Sigmoid(float[] logits)
+    {
+        var probs = new float[logits.Length];
+        for (int i = 0; i < logits.Length; i++)
+        {
+            float x = logits[i];
+            x = Math.Clamp(x, -50f, 50f);
+            probs[i] = 1f / (1f + MathF.Exp(-x));
+        }
         return probs;
     }
 
@@ -394,6 +457,7 @@ internal sealed class AudioContext : IDisposable
         _melProcessor = new MelSpectrogramProcessor(audioConfig);
         _resampler = resampler;
         _latestVisemeResults = new float[Frame.VisemeCount];
+        _latestVisemeResults[0] = 1f;
         _frameNumber = 0;
     }
 
@@ -458,6 +522,7 @@ internal sealed class AudioContext : IDisposable
 
         _ringBuffer.Clear();
         Array.Clear(_latestVisemeResults);
+        _latestVisemeResults[0] = 1f;
         _frameNumber = 0;
     }
 
@@ -479,12 +544,18 @@ public class ModelConfig
 {
     public ModelInfo? model { get; set; }
     public AudioInfo? audio { get; set; }
+    public TrainingInfo? training { get; set; }
 }
 
 public class ModelInfo
 {
     public int num_visemes { get; set; }
     public string? name { get; set; }
+}
+
+public class TrainingInfo
+{
+    public bool multi_label { get; set; }
 }
 
 public class AudioInfo

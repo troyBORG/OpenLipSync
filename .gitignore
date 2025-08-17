@@ -222,3 +222,8 @@ export/
 .idea/
 obj/
 bin/
+
+VisemesAtHome/
+
+OpenLipSync.Inference.Test/
+OpenLipSync.Inference.Standalone/

@@ -966,7 +966,8 @@ def create_optimizer(model: nn.Module, config: TrainingConfiguration) -> torch.o
             model.parameters(),
             lr=learning_rate,
             betas=config.training.betas,
-            weight_decay=weight_decay
+            weight_decay=weight_decay,
+            foreach=False
         )
     
     elif optimizer_name == "adam":

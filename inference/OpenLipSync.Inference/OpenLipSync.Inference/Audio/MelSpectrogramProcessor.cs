@@ -147,14 +147,12 @@ public sealed class MelSpectrogramProcessor : IDisposable
             melSpectrum[mel] = sum;
         }
 
-        // Convert to log scale (dB)
+        // Convert to log scale (dB) from power spectrum.
+        // Use small floor like torchaudio/librosa to avoid log(0).
         for (int i = 0; i < _nMels; i++)
         {
             melSpectrum[i] = 10f * MathF.Log10(MathF.Max(melSpectrum[i], 1e-10f));
         }
-
-        // Apply per-utterance normalization (as per OpenLipSync config)
-        NormalizePerUtterance(melSpectrum);
 
         return melSpectrum;
     }
