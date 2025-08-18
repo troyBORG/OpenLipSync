@@ -114,6 +114,8 @@ class TrainingConfig:
     # Overlap configuration (moved from evaluation)
     viseme_overlap_enabled: bool = False
     viseme_overlap_threshold: float = 0.0
+    # Silence bias for stable predictions
+    silence_bias: float = 0.0
     
     def __post_init__(self):
         """Validate training parameters"""
@@ -145,6 +147,8 @@ class TrainingConfig:
             raise ValueError(f"early_stopping_patience must be positive, got {self.early_stopping_patience}")
         if self.early_stopping_metric not in ["val_loss", "val_f1"]:
             raise ValueError(f"Invalid early_stopping_metric: {self.early_stopping_metric}")
+        if not 0 <= self.silence_bias <= 1:
+            raise ValueError(f"silence_bias must be in [0,1], got {self.silence_bias}")
         if self.target_crossfade_ms < 0:
             raise ValueError(f"target_crossfade_ms must be non-negative, got {self.target_crossfade_ms}")
         if not 0.0 <= self.viseme_overlap_threshold <= 1.0:

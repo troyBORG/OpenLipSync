@@ -294,6 +294,10 @@ class TemporalConvolutionalNetwork(nn.Module):
         # Output projection to viseme classes
         viseme_logits = self.output_projection(hidden)  # (batch, time, num_visemes)
         
+        # Apply silence bias if configured
+        if hasattr(self.config.training, 'silence_bias') and self.config.training.silence_bias > 0:
+            viseme_logits[:, :, 0] += self.config.training.silence_bias
+        
         return viseme_logits
     
     def get_latency_ms(self, device: str = "cpu") -> float:

@@ -112,14 +112,29 @@ def load_run_config_for_checkpoint(ckpt_path: Path) -> Optional[TrainingConfigur
     # Prefer logger-saved config.json at run root
     run_dir = ckpt_path.parent.parent
     run_config_json = run_dir / "config.json"
+    print(f"[DEBUG] Looking for config at: {run_config_json}")
     if run_config_json.exists():
         try:
             with open(run_config_json, "r") as f:
                 cfg = json.load(f)
-            # Rehydrate via TOML loader substitute: dump tmp TOML-like dict is not needed;
-            # Instead, build TrainingConfiguration by feeding dicts into dataclasses is done by load_config only.
-            # Use a small adapter: write a temporary file to pass through existing loader expectations if necessary.
-            # Simpler: construct TrainingConfiguration using same shape as saved dict.
+            print(f"[DEBUG] Loaded config.json, multi_label = {cfg.get('training', {}).get('multi_label', 'NOT_FOUND')}")
+            
+            # Handle backward compatibility for field name changes
+            audio_cfg = cfg["audio"].copy()
+            # Remove old field names that are no longer supported
+            removed_fields = []
+            if "hop_length_samples" in audio_cfg:
+                audio_cfg.pop("hop_length_samples")
+                removed_fields.append("hop_length_samples")
+            if "window_length_samples" in audio_cfg:
+                audio_cfg.pop("window_length_samples") 
+                removed_fields.append("window_length_samples")
+            if "fps" in audio_cfg:
+                audio_cfg.pop("fps")
+                removed_fields.append("fps")
+            if removed_fields:
+                print(f"[DEBUG] Removed old audio fields: {removed_fields}")
+            
             from training.modules.config import (
                 TrainingConfiguration,
                 ModelConfig,
@@ -133,9 +148,9 @@ def load_run_config_for_checkpoint(ckpt_path: Path) -> Optional[TrainingConfigur
                 ExperimentConfig,
             )
 
-            return TrainingConfiguration(
+            config = TrainingConfiguration(
                 model=ModelConfig(**cfg["model"]),
-                audio=AudioConfig(**cfg["audio"]),
+                audio=AudioConfig(**audio_cfg),
                 training=TrainingConfig(**cfg["training"]),
                 data=DataConfig(**cfg["data"]),
                 evaluation=EvaluationConfig(**cfg["evaluation"]),
@@ -145,14 +160,23 @@ def load_run_config_for_checkpoint(ckpt_path: Path) -> Optional[TrainingConfigur
                 experiment=ExperimentConfig(**cfg["experiment"]),
                 config_path=str(DEFAULT_CONFIG),
             )
-        except Exception:
-            pass
+            print(f"[DEBUG] Successfully created TrainingConfiguration from checkpoint, multi_label = {config.training.multi_label}")
+            return config
+        except Exception as e:
+            print(f"[DEBUG] Exception loading config: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"[DEBUG] Config file does not exist: {run_config_json}")
+    print(f"[DEBUG] Falling back to default config")
     return None
 
 
 @st.cache_resource(show_spinner=False)
 def get_base_config() -> TrainingConfiguration:
-    return load_config(DEFAULT_CONFIG)
+    config = load_config(DEFAULT_CONFIG)
+    print(f"[DEBUG] Loaded default config from {DEFAULT_CONFIG}, multi_label = {config.training.multi_label}")
+    return config
 
 
 def compute_mel(audio_path: Path, base_config: TrainingConfiguration) -> np.ndarray:
@@ -186,11 +210,17 @@ def run_model_on_mel(
         x = torch.from_numpy(mel).float().unsqueeze(0).to(config.hardware.device)
         logits = model(x)
         # Respect training mode: multi-label uses sigmoid; single-label uses softmax
-        if bool(getattr(config.training, "multi_label", False)):
+        multi_label_setting = bool(getattr(config.training, "multi_label", False))
+        print(f"[DEBUG] Model inference using multi_label = {multi_label_setting}")
+        if multi_label_setting:
             probs_t = torch.sigmoid(logits)
+            print(f"[DEBUG] Applied sigmoid activation")
         else:
             probs_t = torch.softmax(logits, dim=-1)
+            print(f"[DEBUG] Applied softmax activation")
         probs = probs_t.squeeze(0).cpu().numpy()  # (T, C)
+        print(f"[DEBUG] First frame probabilities sum: {probs[0].sum():.4f}")
+        print(f"[DEBUG] Sample frame probabilities: {probs[0][:5]}")
         preds = np.argmax(probs, axis=-1)
     # Ensure model outputs align with mel length
     t_mel = mel.shape[0]
@@ -800,6 +830,10 @@ def main():
     probs_raw = None
     if ckpt_path is not None and ckpt_path.exists():
         run_cfg = load_run_config_for_checkpoint(ckpt_path) or base_cfg
+        if load_run_config_for_checkpoint(ckpt_path) is not None:
+            print(f"[DEBUG] Using checkpoint's original config, multi_label = {run_cfg.training.multi_label}")
+        else:
+            print(f"[DEBUG] Using fallback config (tcn_test.toml), multi_label = {run_cfg.training.multi_label}")
         preds, probs = run_model_on_mel(mel, run_cfg, ckpt_path)
         probs_raw = probs.copy() if probs is not None else None
 
