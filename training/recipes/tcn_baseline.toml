@@ -93,11 +93,11 @@ mixed_precision = false  # Use 16-bit instead of 32-bit numbers
 # LOSS FUNCTION: How we measure prediction errors
 loss_type = "cross_entropy"  # "cross_entropy" for single- OR multi-label (uses BCE if multi_label=true)
 # Options: "cross_entropy" (standard or multi-label via BCE), "focal_loss" (for imbalanced data)
-multi_label = true            # Enable multi-label training (sigmoid + BCE); targets become multi-hot per frame
-target_crossfade_ms = 60      # Soft multi-hot targets around boundaries (0 disables). Use ~20–60ms
+multi_label = false            # Enable multi-label training (sigmoid + BCE); targets become multi-hot per frame
+target_crossfade_ms = 0      # Soft multi-hot targets around boundaries (0 disables). Use ~20–60ms
  
 # OVERLAP: allow multiple visemes to be considered active near boundaries (also used by metrics)
-viseme_overlap_enabled = true
+viseme_overlap_enabled = false
 viseme_overlap_threshold = 1.0 # overlap threshold
 
 class_weighting = true  # Give more importance to rare visemes
@@ -270,9 +270,9 @@ image_log_interval = 500        # Log images every N steps (if enabled)
 [experiment]
 # Experiment tracking - organize your training runs
 
-name = "tcn_cf_full_dataset"                              # Name for this experiment
+name = "tcn_baseline_full_dataset"                              # Name for this experiment
 tags = ["tcn", "viseme", "100fps"]               # Tags to find related experiments
-notes = "TCN model with viseme crossfade and full dataset"  # Description of what you're testing
+notes = "TCN model baseline and full dataset"  # Description of what you're testing
 
 # TIP: Change the name for each experiment so you can compare results
 # Example names: "tcn_more_layers", "tcn_50fps", "tcn_focal_loss"

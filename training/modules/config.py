@@ -298,16 +298,6 @@ class TrainingConfiguration:
                 f"the number of unique visemes in phoneme_viseme_map ({actual_num_visemes})"
             )
 
-        # Unify crossfade: migrate evaluation.viseme_crossfade_ms into training.target_crossfade_ms silently
-        try:
-            eval_ms = int(getattr(self.evaluation, 'viseme_crossfade_ms', 0))
-            train_ms = int(getattr(self.training, 'target_crossfade_ms', 0))
-            if train_ms == 0 and eval_ms > 0:
-                self.training.target_crossfade_ms = eval_ms
-        except Exception:
-            pass
-
-        # Migrate overlap settings from evaluation -> training for backward compatibility
         try:
             eval_overlap_enabled = bool(getattr(self.evaluation, 'viseme_overlap_enabled', False))
             eval_overlap_threshold = float(getattr(self.evaluation, 'viseme_overlap_threshold', 0.0))

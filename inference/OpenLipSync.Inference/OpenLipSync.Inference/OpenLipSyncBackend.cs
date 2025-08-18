@@ -16,7 +16,6 @@ namespace OpenLipSync.Inference;
 public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 {
     private const int VISEME_COUNT = Frame.VisemeCount;
-    private const float SILENCE_THRESHOLD = 0.001f;
     
     private readonly object _lock = new();
     private readonly ConcurrentDictionary<uint, AudioContext> _contexts = new();

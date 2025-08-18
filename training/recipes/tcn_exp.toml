@@ -93,14 +93,14 @@ mixed_precision = false  # Use 16-bit instead of 32-bit numbers
 # LOSS FUNCTION: How we measure prediction errors
 loss_type = "cross_entropy"  # "cross_entropy" for single- OR multi-label (uses BCE if multi_label=true)
 # Options: "cross_entropy" (standard or multi-label via BCE), "focal_loss" (for imbalanced data)
-multi_label = true            # Enable multi-label training (sigmoid + BCE); targets become multi-hot per frame
-target_crossfade_ms = 60      # Soft multi-hot targets around boundaries (0 disables). Use ~20–60ms
+multi_label = false            # Enable multi-label training (sigmoid + BCE); targets become multi-hot per frame
+target_crossfade_ms = 0      # Soft multi-hot targets around boundaries (0 disables). Use ~20–60ms
  
 # OVERLAP: allow multiple visemes to be considered active near boundaries (also used by metrics)
-viseme_overlap_enabled = true
-viseme_overlap_threshold = 1.0 # overlap threshold
+viseme_overlap_enabled = false
+viseme_overlap_threshold = 0.0 # overlap threshold
 
-class_weighting = true  # Give more importance to rare visemes
+class_weighting = false  # Give more importance to rare visemes
 # Some mouth shapes are much rarer than others in speech
 # This prevents the model from ignoring rare but important visemes
 
@@ -124,8 +124,11 @@ weight_decay = 1e-2  # L2 regularization strength (0.01)
 # Higher values = more regularization
 
 # LEARNING RATE SCHEDULER: Changes learning rate during training
-scheduler = "onecycle"  # Gradually increase then decrease learning rate
-# Options: "onecycle" (fast), "cosine" (smooth), "constant" (no change)
+scheduler = "cosine" 
+# Options: 
+#"onecycle" (fast)
+# "cosine" (smooth)
+#"constant" (no change)
 warmup_ratio = 0.05  # Gradually increase LR for first 5% of training
 # Warmup helps training stability at the beginning
 
@@ -133,7 +136,7 @@ max_epochs = 100  # Maximum number of times to see the full dataset
 # Training will stop early if performance stops improving
 
 # EARLY STOPPING: Stop training when performance plateaus
-early_stopping_patience = 5  # Stop if no improvement for 5 epochs
+early_stopping_patience = 10  # Stop if no improvement for 5 epochs
 early_stopping_metric = "val_f1"  # What metric to watch
 # Options: "val_loss" (validation loss), "val_f1" (F1 score)
 # Prevents overfitting and saves time
@@ -143,7 +146,7 @@ specaugment_enabled = true  # Randomly mask parts of the spectrogram
 specaugment_time_mask_max_ms = 20  # Max audio to mask
 # This teaches the model to handle missing/corrupted audio segments
 
-mask_padded_frames = true  # Mask padded frames in loss calculation
+mask_padded_frames = false  # Mask padded frames in loss calculation
 
 
 [data]
@@ -154,12 +157,12 @@ dataset = "librispeech"
 
 #splits = ["dev-clean"] #For quick testing
 
-#splits = ["train-clean-100"] #For training
+splits = ["train-clean-100"] #For training
 
 
 #splits = ["train-clean-360"] #For training, slow
 #splits = ["train-clean-100","train-clean-360"] #For training, slow
-splits = ["train-clean-100", "train-clean-360", "train-other-500"] #For training, very slow
+#splits = ["train-clean-100", "train-clean-360", "train-other-500"] #For training, very slow
 #splits = ["train-other-500"] #For training, very slow
 
 
@@ -270,9 +273,9 @@ image_log_interval = 500        # Log images every N steps (if enabled)
 [experiment]
 # Experiment tracking - organize your training runs
 
-name = "tcn_cf_full_dataset"                              # Name for this experiment
+name = "no_class_weighting_no_mask_padded_frames"                              # Name for this experiment
 tags = ["tcn", "viseme", "100fps"]               # Tags to find related experiments
-notes = "TCN model with viseme crossfade and full dataset"  # Description of what you're testing
+notes = "TCN model exp and full dataset"  # Description of what you're testing
 
 # TIP: Change the name for each experiment so you can compare results
 # Example names: "tcn_more_layers", "tcn_50fps", "tcn_focal_loss"
