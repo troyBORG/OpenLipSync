@@ -116,6 +116,9 @@ class TrainingConfig:
     viseme_overlap_threshold: float = 0.0
     # Silence bias for stable predictions
     silence_bias: float = 0.0
+    # Optional energy-gated silence biasing (applied when average frame energy < threshold)
+    silence_energy_gate_db: float = -60.0
+    silence_energy_gate_bias: float = 0.0
     
     def __post_init__(self):
         """Validate training parameters"""
@@ -153,6 +156,11 @@ class TrainingConfig:
             raise ValueError(f"target_crossfade_ms must be non-negative, got {self.target_crossfade_ms}")
         if not 0.0 <= self.viseme_overlap_threshold <= 1.0:
             raise ValueError(f"viseme_overlap_threshold must be in [0,1], got {self.viseme_overlap_threshold}")
+        # Validate energy gate parameters
+        if not -120.0 <= float(self.silence_energy_gate_db) <= 0.0:
+            raise ValueError(f"silence_energy_gate_db should be in [-120, 0] dBFS, got {self.silence_energy_gate_db}")
+        if float(self.silence_energy_gate_bias) < 0.0:
+            raise ValueError(f"silence_energy_gate_bias must be non-negative, got {self.silence_energy_gate_bias}")
 
 
 @dataclass
@@ -166,6 +174,10 @@ class DataConfig:
     noise_snr_range: List[float]
     gain_range: List[float]
     phoneme_viseme_map: str
+    # Synthetic silence/near-silence augmentation
+    silence_augment_prob: float = 0.0
+    silence_noise_dbfs_range: List[float] = None
+    silence_chunk_length_s: List[float] = None
     
     def __post_init__(self):
         """Validate data parameters"""
@@ -177,6 +189,20 @@ class DataConfig:
             raise ValueError(f"noise_snr_range must be [min, max] with min < max, got {self.noise_snr_range}")
         if len(self.gain_range) != 2 or self.gain_range[0] >= self.gain_range[1]:
             raise ValueError(f"gain_range must be [min, max] with min < max, got {self.gain_range}")
+        # Defaults for optional silence augmentation params
+        if self.silence_noise_dbfs_range is None:
+            self.silence_noise_dbfs_range = [-60.0, -40.0]
+        if self.silence_chunk_length_s is None:
+            self.silence_chunk_length_s = [1.0, 4.0]
+        # Validate optional params
+        if not 0.0 <= float(self.silence_augment_prob) <= 1.0:
+            raise ValueError(f"silence_augment_prob must be in [0,1], got {self.silence_augment_prob}")
+        if len(self.silence_noise_dbfs_range) != 2 or not (self.silence_noise_dbfs_range[0] < self.silence_noise_dbfs_range[1]):
+            raise ValueError(f"silence_noise_dbfs_range must be [min, max] with min < max, got {self.silence_noise_dbfs_range}")
+        if self.silence_noise_dbfs_range[1] > 0.0:
+            raise ValueError(f"silence_noise_dbfs_range upper bound must be <= 0 dBFS, got {self.silence_noise_dbfs_range}")
+        if len(self.silence_chunk_length_s) != 2 or not (self.silence_chunk_length_s[0] < self.silence_chunk_length_s[1]):
+            raise ValueError(f"silence_chunk_length_s must be [min_s, max_s] with min < max, got {self.silence_chunk_length_s}")
 
 
 @dataclass

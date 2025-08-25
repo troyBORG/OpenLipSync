@@ -685,6 +685,15 @@ def compute_class_counts(train_loader, num_classes: int, multi_label: bool, mask
 
 def _class_count_cache_key(config: TrainingConfiguration) -> str:
     """Build a deterministic key for class-count caching based on data and labeling config."""
+    # Include a hash of the resolved phoneme->viseme mapping so cache invalidates when mapping changes
+    try:
+        # Deterministic mapping serialization
+        mapping_items = sorted((str(k), int(v)) for k, v in (config.phoneme_to_viseme_mapping or {}).items())
+        mapping_blob = json.dumps(mapping_items, separators=(",", ":")).encode("utf-8")
+        mapping_hash = hashlib.sha256(mapping_blob).hexdigest()[:16]
+    except Exception:
+        mapping_hash = "unknown"
+
     payload = {
         'dataset': config.data.dataset,
         'splits': config.data.splits,
@@ -694,6 +703,7 @@ def _class_count_cache_key(config: TrainingConfiguration) -> str:
         'multi_label': bool(getattr(config.training, 'multi_label', False)),
         'target_crossfade_ms': int(getattr(config.training, 'target_crossfade_ms', 0)),
         'phoneme_viseme_map': str(config.data.phoneme_viseme_map),
+        'mapping_hash': mapping_hash,
         'fps': float(config.audio.fps),
     }
     blob = json.dumps(payload, sort_keys=True).encode('utf-8')

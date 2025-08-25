@@ -108,6 +108,25 @@ class AudioProcessor:
         mel_features = mel_spectrogram_db.squeeze(0).transpose(0, 1)
         
         return mel_features
+
+    def waveform_to_mel_features(self, waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
+        """
+        Convert an in-memory waveform to mel features with current configuration.
+        """
+        # Ensure mono
+        if waveform.dim() == 2 and waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        elif waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
+        # Resample if needed
+        if sample_rate != self.audio_config.sample_rate:
+            if self.resampler is None or self.resampler.orig_freq != sample_rate:
+                self.resampler = T.Resample(orig_freq=sample_rate, new_freq=self.audio_config.sample_rate)
+            waveform = self.resampler(waveform)
+        # Mel and dB
+        mel = self.mel_transform(waveform)
+        mel_db = self.amplitude_to_db(mel)
+        return mel_db.squeeze(0).transpose(0, 1)
     
     def normalize_features(self, mel_features: torch.Tensor, 
                           normalization_stats: Optional[Dict[str, torch.Tensor]] = None) -> torch.Tensor:
@@ -159,40 +178,11 @@ class PhonemeAligner:
         self.config = config
         self.phoneme_to_viseme = config.phoneme_to_viseme_mapping
         
-        # Create reverse mapping for debugging
-        self.viseme_to_phonemes = {}
-        for phoneme, viseme in self.phoneme_to_viseme.items():
-            if viseme not in self.viseme_to_phonemes:
-                self.viseme_to_phonemes[viseme] = []
-            self.viseme_to_phonemes[viseme].append(phoneme)
     
-    
-    def get_phoneme_index(self, phoneme: str) -> int:
-        """Get the index for a phoneme (for now, just return 0 as placeholder)"""
-        # TODO: Implement proper phoneme indexing if needed
-        return 0
     
     def get_viseme_index(self, phoneme: str) -> int:
         """Get the viseme index for a phoneme"""
         return self.phoneme_to_viseme.get(phoneme, 0)  # Default to silence
-    
-    def align_text(self, transcript: str, num_frames: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Create dummy alignment from text (fallback when no MFA alignment available)
-        
-        Args:
-            transcript: Text transcript
-            num_frames: Number of target frames
-            
-        Returns:
-            Tuple of (phoneme_targets, viseme_targets)
-        """
-        # For now, just return silence for all frames
-        # In a real implementation, you'd use a text-to-phoneme system
-        phoneme_targets = torch.zeros(num_frames, dtype=torch.long)
-        viseme_targets = torch.zeros(num_frames, dtype=torch.long)
-        
-        return phoneme_targets, viseme_targets
 
 
 class SpecAugment:
@@ -304,6 +294,23 @@ class AudioAugmentation:
         # Random gain in specified range
         gain = random.uniform(*self.data_config.gain_range)
         return waveform * gain
+
+    def synthesize_silence_or_near_silence(self, 
+                                           sample_rate: int, 
+                                           min_length_s: float, 
+                                           max_length_s: float) -> torch.Tensor:
+        """
+        Generate a random-length chunk of near-silence: low-level Gaussian noise.
+        Returns mono waveform tensor with shape (1, samples).
+        """
+        length_s = random.uniform(min_length_s, max_length_s)
+        num_samples = int(length_s * sample_rate)
+        # Choose noise level in dBFS (negative). Convert to linear std assuming signal peak ~1.
+        dbfs_min, dbfs_max = self.config.data.silence_noise_dbfs_range
+        noise_dbfs = random.uniform(dbfs_min, dbfs_max)
+        noise_rms = 10 ** (noise_dbfs / 20.0)
+        noise = torch.randn(1, num_samples) * noise_rms
+        return noise
 
 
 class LibriSpeechDataset(Dataset):
@@ -423,17 +430,36 @@ class LibriSpeechDataset(Dataset):
         with open(lab_file, 'r', encoding='utf-8') as f:
             transcript = f.read().strip()
         
-        # Process audio features (this loads and processes the audio)
-        audio_features = self.audio_processor.load_and_process_audio(audio_file)
+        # Optional: replace with synthetic near-silence sample with some probability
+        use_silence_aug = False
+        if self.is_training and self.config.data.augmentation_enabled:
+            try:
+                if random.random() < float(self.config.data.silence_augment_prob):
+                    use_silence_aug = True
+            except Exception:
+                use_silence_aug = False
+
+        if use_silence_aug:
+            # Generate near-silence waveform and targets set to silence
+            sr = self.config.audio.sample_rate
+            min_s, max_s = self.config.data.silence_chunk_length_s
+            waveform = self.audio_augment.synthesize_silence_or_near_silence(sr, min_s, max_s)
+            audio_features = self.audio_processor.waveform_to_mel_features(waveform, sr)
+        else:
+            # Process audio features (this loads and processes the audio)
+            audio_features = self.audio_processor.load_and_process_audio(audio_file)
         
-        # TODO: Apply audio augmentation if training
-        # For now, we skip augmentation to keep the pipeline simple
+        # Apply normalization according to configuration
+        audio_features = self.audio_processor.normalize_features(audio_features)
+        
+        # Waveform-level augmentation would require waveform; here we only have features.
+        # Keep feature-level augment below.
         
         # Load alignment data if available and use for more accurate targets
         phoneme_targets = None
         viseme_targets = None
         
-        if json_file.exists():
+        if json_file.exists() and not use_silence_aug:
             try:
                 with open(json_file, 'r', encoding='utf-8') as f:
                     alignment_data = json.load(f)
@@ -447,11 +473,21 @@ class LibriSpeechDataset(Dataset):
                 print(f"Warning: Failed to process alignment data for {base_name}: {e}")
         
         # If no valid alignment was found, raise an error instead of training on silence
-        if phoneme_targets is None or viseme_targets is None:
+        if viseme_targets is None and not use_silence_aug:
             raise RuntimeError(
                 f"Missing MFA alignment for sample {base_name} in {self.dataset_dir}. "
                 f"Run alignment (see run_mfa_alignment_prepared.sh) before training."
             )
+        elif use_silence_aug:
+            # Create pure-silence targets matching feature frames
+            num_frames = audio_features.shape[0]
+            num_classes = self.config.model.num_visemes
+            multi = bool(getattr(self.config.training, "multi_label", False))
+            if multi:
+                viseme_targets = torch.zeros(num_frames, num_classes, dtype=torch.float32)
+                viseme_targets[:, 0] = 1.0
+            else:
+                viseme_targets = torch.zeros(num_frames, dtype=torch.long)  # 0 == silence
         
         # Extract metadata from filename (format: speaker-chapter-utterance)
         parts = base_name.split('-')
@@ -495,7 +531,6 @@ class LibriSpeechDataset(Dataset):
             frame_rate = target_frames / audio_duration
             
             # Initialize targets
-            phoneme_targets = torch.zeros(target_frames, dtype=torch.long)
             num_classes = self.config.model.num_visemes
             multi = bool(getattr(self.config.training, "multi_label", False))
             target_crossfade_ms = int(getattr(self.config.training, "target_crossfade_ms", 0))
@@ -516,12 +551,8 @@ class LibriSpeechDataset(Dataset):
                     start_frame = max(0, min(start_frame, target_frames - 1))
                     end_frame = max(start_frame + 1, min(end_frame, target_frames))
                     
-                    # Get phoneme and viseme indices
-                    phoneme_idx = self.phoneme_aligner.get_phoneme_index(phone)
+                    # Get viseme index
                     viseme_idx = self.phoneme_aligner.get_viseme_index(phone)
-                    
-                    # Set targets for this interval
-                    phoneme_targets[start_frame:end_frame] = phoneme_idx
                     if viseme_targets.dim() == 2:
                         # Independent per-class assignment with symmetric crossfade
                         viseme_targets[start_frame:end_frame, viseme_idx] = 1.0
@@ -548,76 +579,12 @@ class LibriSpeechDataset(Dataset):
                 non_silence = viseme_targets[:, 1:].sum(dim=-1) if num_classes > 1 else torch.zeros(target_frames)
                 silence_active = (non_silence <= 0.0).to(viseme_targets.dtype)
                 viseme_targets[:, 0] = torch.maximum(viseme_targets[:, 0], silence_active)
-            return phoneme_targets, viseme_targets
+            return None, viseme_targets  # phoneme_targets not used, return None
             
         except Exception as e:
             raise RuntimeError(f"Failed to process alignment data: {e}")
     
-    def _create_dummy_alignment(self, transcript: str, duration: float) -> torch.Tensor:
-        """
-        Create dummy phoneme alignment for demonstration.
-        In production, use Montreal Forced Alignment (MFA) or similar.
-        
-        Args:
-            transcript: Text transcript
-            duration: Audio duration in seconds
-            
-        Returns:
-            torch.Tensor: Frame-level viseme targets
-        """
-        # This is a simplified placeholder - real alignment needs MFA
-        num_frames = int(duration * self.config.audio.fps)
-        num_classes = self.config.model.num_visemes
-        is_multi = bool(getattr(self.config.training, "multi_label", False))
-        
-        # Map common letter patterns to visemes (very crude approximation)
-        letter_to_viseme = {
-            'p': 1, 'b': 1, 'm': 1,  # PP viseme (bilabial)
-            'f': 2, 'v': 2,          # FF viseme (labiodental)
-            'th': 3,                 # TH viseme (dental)
-            't': 4, 'd': 4, 'n': 4,  # DD viseme (alveolar)
-            'k': 5, 'g': 5,          # kk viseme (velar)
-            'ch': 6, 'j': 6, 'sh': 6, # CH viseme (palatal)
-            's': 7, 'z': 7,          # SS viseme (sibilant)
-            'l': 8, 'r': 8,          # RR viseme (liquid)
-            'a': 10, 'aa': 10,       # aa viseme (open)
-            'e': 11, 'eh': 11,       # E viseme (mid)
-            'i': 12, 'ih': 12,       # ih viseme (close)
-            'o': 13, 'oh': 13,       # oh viseme (back)
-            'u': 14, 'oo': 14,       # ou viseme (round)
-        }
-        
-        # Convert transcript to viseme sequence (very simplified)
-        transcript_lower = transcript.lower()
-        viseme_sequence = []
-        
-        for char in transcript_lower:
-            if char in letter_to_viseme:
-                viseme_sequence.append(letter_to_viseme[char])
-            elif char.isalpha():
-                viseme_sequence.append(10)  # Default to 'aa' viseme
-            else:
-                viseme_sequence.append(0)   # Silence for non-letters
-        
-        # Spread visemes over time frames
-        if len(viseme_sequence) == 0:
-            return torch.zeros((num_frames, num_classes), dtype=torch.float32) if is_multi else torch.zeros(num_frames, dtype=torch.long)
-        
-        frames_per_viseme = max(1, num_frames // len(viseme_sequence))
-        targets = []
-        
-        for viseme in viseme_sequence:
-            targets.extend([viseme] * frames_per_viseme)
-        
-        # Pad or truncate to exact length
-        targets = targets[:num_frames]
-        while len(targets) < num_frames:
-            targets.append(0)  # Pad with silence
-        if is_multi:
-            out = torch.zeros(num_frames, num_classes, dtype=torch.float32)
-            out[torch.arange(num_frames), torch.tensor(targets, dtype=torch.long)] = 1.0
-            return out
-        return torch.tensor(targets, dtype=torch.long)
+    
     
     def _apply_chunking(self, audio_sample: AudioSample) -> AudioSample:
         """

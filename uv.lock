@@ -705,6 +705,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "onnx" },
     { name = "requests" },
     { name = "scikit-learn" },
     { name = "tensorboard" },
@@ -727,6 +728,7 @@ gui = [
 requires-dist = [
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "onnx" },
     { name = "onnx", marker = "extra == 'export'" },
     { name = "plotly", marker = "extra == 'gui'" },
     { name = "requests" },

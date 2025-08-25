@@ -458,8 +458,14 @@ class TensorBoardLogger:
             # Create figure
             fig, ax = plt.subplots(figsize=(10, 8))
             
-            # Plot confusion matrix
-            im = ax.imshow(confusion_matrix, interpolation='nearest', cmap=plt.cm.Blues)
+            # Row-normalize so darker = higher per-class accuracy/confusion rate
+            cm = confusion_matrix.astype(np.float32)
+            row_sums = cm.sum(axis=1, keepdims=True)
+            row_sums = np.where(row_sums == 0, 1.0, row_sums)
+            cm_norm = cm / row_sums
+
+            # Plot normalized confusion matrix with fixed 0-1 scale
+            im = ax.imshow(cm_norm, interpolation='nearest', cmap=plt.cm.Blues, vmin=0.0, vmax=1.0)
             ax.figure.colorbar(im, ax=ax)
             
             # Set labels
@@ -470,22 +476,25 @@ class TensorBoardLogger:
                 ax.set_xticklabels(class_names, rotation=45, ha="right")
                 ax.set_yticklabels(class_names)
             
-            # Add text annotations
-            thresh = confusion_matrix.max() / 2.
-            for i in range(confusion_matrix.shape[0]):
-                for j in range(confusion_matrix.shape[1]):
-                    ax.text(j, i, format(confusion_matrix[i, j], 'd'),
+            # Add text annotations (normalized values)
+            thresh = 0.5
+            for i in range(cm_norm.shape[0]):
+                for j in range(cm_norm.shape[1]):
+                    ax.text(j, i, f"{cm_norm[i, j]:.2f}",
                            ha="center", va="center",
-                           color="white" if confusion_matrix[i, j] > thresh else "black")
+                           color="white" if cm_norm[i, j] > thresh else "black")
             
             ax.set_ylabel('True Label')
             ax.set_xlabel('Predicted Label')
-            ax.set_title('Confusion Matrix')
+            ax.set_title('Confusion Matrix (row-normalized)')
             
-            # Convert to tensor and log
-            fig.canvas.draw()
-            image_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-            image_array = image_array.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+            # Convert to tensor and log (backend-agnostic)
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            canvas = FigureCanvasAgg(fig)
+            canvas.draw()
+            width, height = canvas.get_width_height()
+            buf = canvas.buffer_rgba()
+            image_array = np.frombuffer(buf, dtype=np.uint8).reshape(height, width, 4)[:, :, :3]
             
             # Convert to CHW format for TensorBoard
             image_tensor = torch.from_numpy(image_array).permute(2, 0, 1)

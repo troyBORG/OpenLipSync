@@ -294,9 +294,20 @@ class TemporalConvolutionalNetwork(nn.Module):
         # Output projection to viseme classes
         viseme_logits = self.output_projection(hidden)  # (batch, time, num_visemes)
         
-        # Apply silence bias if configured
-        if hasattr(self.config.training, 'silence_bias') and self.config.training.silence_bias > 0:
-            viseme_logits[:, :, 0] += self.config.training.silence_bias
+        # Apply static silence bias if configured
+        if getattr(self.config.training, 'silence_bias', 0.0) > 0:
+            viseme_logits[:, :, 0] += float(self.config.training.silence_bias)
+
+        # Energy-gated silence bias: if average mel energy (approx dB) is below threshold
+        try:
+            gate_db = float(getattr(self.config.training, 'silence_energy_gate_db', -60.0))
+            gate_bias = float(getattr(self.config.training, 'silence_energy_gate_bias', 0.0))
+            if gate_bias > 0.0:
+                frame_db = mel_features.mean(dim=-1)  # (B, T)
+                mask = (frame_db <= gate_db).to(viseme_logits.dtype)
+                viseme_logits[:, :, 0] += (mask * gate_bias)
+        except Exception:
+            pass
         
         return viseme_logits
     

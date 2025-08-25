@@ -59,17 +59,18 @@ n_mels = 80  # Number of frequency bands (80 is standard for speech)
 # 64-100 is typical range
 
 fmin = 50   # Lowest frequency we care about (Hz)
-fmax = 8000 # Highest frequency we care about (Hz)
-# Human speech is mostly 50Hz-8kHz, so we ignore everything else
-# This focuses the model on speech-relevant frequencies
+fmax = 6000 # Focus on formant-rich regions (better for lip-sync)
+# Most lip-sync relevant info is below 6kHz
+# Reduces noise from high-frequency artifacts
 
 n_fft = 1024  # FFT size for frequency analysis
 # Larger = better frequency resolution, smaller = better time resolution
 # Should be power of 2 (512, 1024, 2048, etc.)
 
-normalization = "per_utterance"  # Normalize each audio file separately
-# Helps with volume differences between recordings
-# Options: "per_utterance", "global", "none"
+normalization = "none"  # Keep raw mel spectrogram values
+# per_utterance: Standardize each file (can hurt viseme distinction)  
+# global: Dataset-wide standardization (not implemented)
+# none: Preserve natural energy patterns (often better for lip-sync)
 
 [training]
 # Training parameters - how the model learns from data
@@ -81,8 +82,8 @@ batch_size = 32
 # Common values: 16, 32, 64 (powers of 2 work best)
 
 # Audio chunking - long audio files are split into smaller pieces
-max_chunk_length_s = 8.0  # Maximum 8 seconds per training chunk
-min_chunk_length_s = 2.0  # Minimum 2 seconds per training chunk
+max_chunk_length_s = 16.0  # Shorter chunks for better local patterns
+min_chunk_length_s = 1.0  # Shorter minimum for more variety
 # Shorter chunks = faster training, but less context
 # Longer chunks = more context, but slower and more memory
 
@@ -97,8 +98,8 @@ multi_label = false            # Enable multi-label training (sigmoid + BCE); ta
 target_crossfade_ms = 0      # Soft multi-hot targets around boundaries (0 disables). Use ~20–60ms
  
 # OVERLAP: allow multiple visemes to be considered active near boundaries (also used by metrics)
-viseme_overlap_enabled = false
-viseme_overlap_threshold = 0.0 # overlap threshold
+viseme_overlap_enabled = false  # Allow overlapping visemes in evaluation
+viseme_overlap_threshold = 0.0 # Threshold for considering visemes as overlapping
 
 class_weighting = false  # Disable extreme class weighting (was causing instability)
 # Some mouth shapes are much rarer than others in speech
@@ -107,10 +108,12 @@ class_weighting = false  # Disable extreme class weighting (was causing instabil
 # SILENCE BIAS: Prefer neutral mouth over incorrect movements
 silence_bias = 0.1  # Add bias towards silence class (0.0 = no bias, 0.5 = strong bias)
 # Helps avoid false lip movements during pauses and uncertain regions
+silence_energy_gate_db = -60.0     # If avg frame energy < this (approx dB), boost silence further
+silence_energy_gate_bias = 0.2     # Extra bias added to silence under the gate
 
 # Focal loss parameters (only used if loss_type = "focal_loss")
-focal_loss_alpha = 1.0  # Class balancing factor,
-focal_loss_gamma = 2.0  # Focus on hard examples
+focal_loss_alpha = 1.0  # Class balancing factor, 
+focal_loss_gamma = 2.0  # Focus on hard examples 
 # Focal loss helps when some classes are much rarer than others
 
 # OPTIMIZER: The algorithm that updates model weights
@@ -159,13 +162,13 @@ mask_padded_frames = false  # Mask padded frames in loss calculation
 # DATASET: LibriSpeech is a large, free speech dataset
 dataset = "librispeech"
 
-splits = ["test-clean"] #For quick testing
+#splits = ["test-clean"] #For quick testing
 
 #splits = ["train-clean-100"] #For training
 
 
 #splits = ["train-clean-360"] #For training, slow
-#splits = ["train-clean-100","train-clean-360"] #For training, slow
+splits = ["train-clean-100","train-clean-360"] #For training, slow
 #splits = ["train-clean-100", "train-clean-360", "train-other-500"] #For training, very slow
 #splits = ["train-other-500"] #For training, very slow
 
@@ -182,11 +185,16 @@ test_split = "test-clean"  # Test set (for final evaluation only)
 # Never train on validation or test data!
 
 # OPTIONAL DATA AUGMENTATION: Make training data more varied
-augmentation_enabled = false  # Start with false, enable if overfitting
+augmentation_enabled = true  # Enable for silence/noise augmentation and SNR/gain
 noise_snr_range = [10, 30]   # Add noise at 10-30 dB signal-to-noise ratio
 gain_range = [0.8, 1.2]     # Randomly change volume by ±20%
 # Augmentation helps the model work in noisy real-world conditions
 # But can slow training, so start without it
+
+# Synthetic silence/near-silence augmentation to reduce false activations on silence
+silence_augment_prob = 0.1          # 10% of samples replaced with near-silence noise chunks
+silence_noise_dbfs_range = [-65.0, -40.0]  # Noise level for near-silence
+silence_chunk_length_s = [1.0, 4.0]       # Duration range for synthetic silence chunks
 
 # PHONEME TO VISEME MAPPING: How speech sounds map to mouth shapes
 phoneme_viseme_map = "training/configs/viseme_map_en_us_arpa.json"
@@ -234,7 +242,7 @@ pin_memory = false    # Speed optimization for GPU training
 # Logging and checkpointing - track progress and save models
 
 log_interval = 20    # Print training stats every X steps
-save_interval = 100  # Save model checkpoint every X steps
+save_interval = 500  # Save model checkpoint every X steps
 # More frequent logging = better monitoring, but slower training
 
 max_checkpoints = 10   # Keep only the 5 most recent model saves
@@ -266,7 +274,7 @@ run_name_format = "{experiment_name}_{timestamp}"  # How to name each run
 # What to log to TensorBoard
 log_scalars = true              # Loss, accuracy, learning rate, etc.
 log_histograms = false          # Weight/gradient distributions (slower but detailed)
-log_images = false              # Spectrograms and confusion matrices (uses disk space)
+log_images = true              # Spectrograms and confusion matrices (uses disk space)
 log_audio = false               # Audio samples (useful for debugging, uses lots of space)
 
 # Update frequency
@@ -277,9 +285,9 @@ image_log_interval = 500        # Log images every N steps (if enabled)
 [experiment]
 # Experiment tracking - organize your training runs
 
-name = "test_run"                              # Name for this experiment
+name = "audio_augmentation_full_dataset2"                              # Name for this experiment
 tags = ["tcn", "viseme", "100fps"]               # Tags to find related experiments
-notes = "TCN model test run"  # Description of what you're testing
+notes = "TCN model test run with audio augmentation"  # Description of what you're testing
 
 # TIP: Change the name for each experiment so you can compare results
 # Example names: "tcn_more_layers", "tcn_50fps", "tcn_focal_loss"

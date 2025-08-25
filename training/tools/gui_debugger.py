@@ -829,8 +829,9 @@ def main():
     probs = None
     probs_raw = None
     if ckpt_path is not None and ckpt_path.exists():
-        run_cfg = load_run_config_for_checkpoint(ckpt_path) or base_cfg
-        if load_run_config_for_checkpoint(ckpt_path) is not None:
+        cfg_from_ckpt = load_run_config_for_checkpoint(ckpt_path)
+        run_cfg = cfg_from_ckpt or base_cfg
+        if cfg_from_ckpt is not None:
             print(f"[DEBUG] Using checkpoint's original config, multi_label = {run_cfg.training.multi_label}")
         else:
             print(f"[DEBUG] Using fallback config (tcn_test.toml), multi_label = {run_cfg.training.multi_label}")
