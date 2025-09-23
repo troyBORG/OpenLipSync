@@ -100,7 +100,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
         try
         {
-            var audioContext = new AudioContext(_inputSampleRate, _resampler, _audioConfig);
+            var audioContext = new AudioContext(_inputSampleRate, _resampler, _audioConfig, _numVisemes);
             context = _nextContextId++;
             _contexts[context] = audioContext;
             
@@ -369,7 +369,8 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"Inference error: {ex.Message}");
-            return new float[VISEME_COUNT];
+            // Keep internal arrays consistent with model viseme count
+            return new float[_numVisemes > 0 ? _numVisemes : VISEME_COUNT];
         }
     }
 
@@ -445,18 +446,20 @@ internal sealed class AudioContext : IDisposable
     private readonly AudioRingBuffer _ringBuffer;
     private readonly MelSpectrogramProcessor _melProcessor;
     private readonly AudioResampler? _resampler;
+    private readonly int _modelVisemeCount;
     private readonly float[] _latestVisemeResults;
     private float _smoothing = 0.7f;
     private int _frameNumber;
     private bool _disposed;
 
-    public AudioContext(int inputSampleRate, AudioResampler? resampler, AudioProcessingConfig audioConfig)
+    public AudioContext(int inputSampleRate, AudioResampler? resampler, AudioProcessingConfig audioConfig, int modelVisemeCount)
     {
         _ringBuffer = new AudioRingBuffer(audioConfig.SampleRate * 3); // 3 seconds at target sample rate
         _melProcessor = new MelSpectrogramProcessor(audioConfig);
         _resampler = resampler;
-        _latestVisemeResults = new float[Frame.VisemeCount];
-        _latestVisemeResults[0] = 1f;
+        _modelVisemeCount = modelVisemeCount > 0 ? modelVisemeCount : Frame.VisemeCount;
+        _latestVisemeResults = new float[_modelVisemeCount];
+        if (_latestVisemeResults.Length > 0) _latestVisemeResults[0] = 1f;
         _frameNumber = 0;
     }
 
@@ -478,10 +481,11 @@ internal sealed class AudioContext : IDisposable
 
     public void UpdateLatestResults(float[] visemeProbs)
     {
-        if (_disposed || visemeProbs.Length != Frame.VisemeCount) return;
+        if (_disposed || visemeProbs == null || visemeProbs.Length == 0) return;
 
-        // Apply smoothing
-        for (int i = 0; i < Frame.VisemeCount; i++)
+        // Apply smoothing over overlapping indices; ignore extras
+        int n = Math.Min(_latestVisemeResults.Length, visemeProbs.Length);
+        for (int i = 0; i < n; i++)
         {
             _latestVisemeResults[i] = _latestVisemeResults[i] * _smoothing + visemeProbs[i] * (1f - _smoothing);
         }
@@ -493,9 +497,15 @@ internal sealed class AudioContext : IDisposable
 
         frame.frameNumber = ++_frameNumber;
         frame.frameDelay = 0;
-        
-        Array.Copy(_latestVisemeResults, frame.Visemes, Math.Min(_latestVisemeResults.Length, frame.Visemes.Length));
-        
+
+        // Copy model visemes into OVR frame with truncate/pad
+        int copyCount = Math.Min(_latestVisemeResults.Length, frame.Visemes.Length);
+        Array.Copy(_latestVisemeResults, frame.Visemes, copyCount);
+        if (copyCount < frame.Visemes.Length)
+        {
+            Array.Clear(frame.Visemes, copyCount, frame.Visemes.Length - copyCount);
+        }
+
         // Set laughter score to 0 for now (could be enhanced with laughter detection)
         frame.laughterScore = 0f;
     }
@@ -521,7 +531,7 @@ internal sealed class AudioContext : IDisposable
 
         _ringBuffer.Clear();
         Array.Clear(_latestVisemeResults);
-        _latestVisemeResults[0] = 1f;
+        if (_latestVisemeResults.Length > 0) _latestVisemeResults[0] = 1f;
         _frameNumber = 0;
     }
 
