@@ -41,8 +41,8 @@ public sealed class OVRLipSyncInterface : IDisposable
         => IsInitialized ? _backend.ResetContext(context) : Result.Unknown;
 
     // Control
-    public Result SendSignal(uint context, Signals signal, int arg1, int arg2)
-        => IsInitialized ? _backend.SendSignal(context, signal, arg1, arg2) : Result.Unknown;
+    public Result SendSignal(uint context, Signals signal, int arg1)
+        => IsInitialized ? _backend.SendSignal(context, signal, arg1) : Result.Unknown;
 
     // Processing (float)
     public Result ProcessFrame(uint context, float[] audioBuffer, Frame frame, bool stereo = true)

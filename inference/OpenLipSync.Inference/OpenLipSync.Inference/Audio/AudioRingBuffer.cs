@@ -1,6 +1,3 @@
-using System;
-using System.Threading;
-
 namespace OpenLipSync.Inference.Audio;
 
 /// <summary>

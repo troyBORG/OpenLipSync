@@ -1,6 +1,5 @@
-using System;
 using System.Collections.Concurrent;
-using System.IO;
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -15,8 +14,6 @@ namespace OpenLipSync.Inference;
 /// </summary>
 public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 {
-    private const int VISEME_COUNT = Frame.VisemeCount;
-    
     private readonly object _lock = new();
     private readonly ConcurrentDictionary<uint, AudioContext> _contexts = new();
     private InferenceSession? _onnxSession;
@@ -60,7 +57,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"OpenLipSync initialization failed: {ex.Message}");
+            Debug.WriteLine($"OpenLipSync initialization failed: {ex.Message}");
             return Result.CannotCreateContext;
         }
     }
@@ -146,13 +143,13 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         return Result.InvalidParam;
     }
 
-    public Result SendSignal(uint context, Signals signal, int arg1, int arg2)
+    public Result SendSignal(uint context, Signals signal, int arg1)
     {
         if (!_initialized) return Result.Unknown;
 
         if (_contexts.TryGetValue(context, out var audioContext))
         {
-            return audioContext.SendSignal(signal, arg1, arg2);
+            return audioContext.SendSignal(signal, arg1);
         }
 
         return Result.InvalidParam;
@@ -195,7 +192,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"ProcessFrameFloat error: {ex.Message}");
+            Debug.WriteLine($"ProcessFrameFloat error: {ex.Message}");
             return Result.Unknown;
         }
     }
@@ -266,7 +263,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
             if (modelPath == null)
             {
-                System.Diagnostics.Debug.WriteLine("ONNX model file not found");
+                Debug.WriteLine("ONNX model file not found");
                 return false;
             }
 
@@ -280,14 +277,14 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
                 {
                     _audioConfig = AudioProcessingConfig.FromModelConfig(_modelConfig);
                     
-                    System.Diagnostics.Debug.WriteLine($"Loaded config: {_audioConfig.SampleRate}Hz, {_audioConfig.NMels} mels, {_audioConfig.Fps}fps, {_audioConfig.HopLengthSamples} hop samples");
+                    Debug.WriteLine($"Loaded config: {_audioConfig.SampleRate}Hz, {_audioConfig.NMels} mels, {_audioConfig.Fps}fps, {_audioConfig.HopLengthSamples} hop samples");
                     
                     // Log the sample rate from config
-                    System.Diagnostics.Debug.WriteLine($"Model expects {_audioConfig.SampleRate}Hz (from config)");
+                    Debug.WriteLine($"Model expects {_audioConfig.SampleRate}Hz (from config)");
                     
                     // Cache flags and constants for runtime
-                    _isMultiLabel = _modelConfig.training?.multi_label ?? false;
-                    _numVisemes = _modelConfig.model?.num_visemes ?? Frame.VisemeCount;
+                    _isMultiLabel = _modelConfig.Training?.MultiLabel ?? false;
+                    _numVisemes = _modelConfig.Model?.NumVisemes ?? Frame.VisemeCount;
                 }
             }
 
@@ -301,12 +298,12 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
             _onnxSession = new InferenceSession(modelPath, sessionOptions);
 
-            System.Diagnostics.Debug.WriteLine($"Loaded OpenLipSync model: {modelPath}");
+            Debug.WriteLine($"Loaded OpenLipSync model: {modelPath}");
             return true;
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Failed to load model: {ex.Message}");
+            Debug.WriteLine($"Failed to load model: {ex.Message}");
             return false;
         }
 
@@ -408,7 +405,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Inference error: {ex.Message}");
+            Debug.WriteLine($"Inference error: {ex.Message}");
             Array.Clear(destination);
         }
     }
@@ -433,161 +430,4 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
             _disposed = true;
         }
     }
-}
-
-/// <summary>
-/// Audio processing context for a single audio stream.
-/// Handles resampling, buffering, and mel spectrogram computation.
-/// </summary>
-internal sealed class AudioContext : IDisposable
-{
-    private readonly AudioRingBuffer _ringBuffer;
-    private readonly MelSpectrogramProcessor _melProcessor;
-    private readonly AudioResampler? _resampler;
-    private readonly int _modelVisemeCount;
-    private readonly float[] _latestVisemeResults;
-    private readonly float[] _probabilityBuffer; // reused buffer sized to model visemes
-    private float _smoothing = 0.7f;
-    private int _frameNumber;
-    private bool _disposed;
-
-    public AudioContext(int inputSampleRate, AudioProcessingConfig audioConfig, int modelVisemeCount)
-    {
-        _ringBuffer = new AudioRingBuffer(audioConfig.SampleRate * 3); // 3 seconds at target sample rate
-        _melProcessor = new MelSpectrogramProcessor(audioConfig);
-        _resampler = inputSampleRate != audioConfig.SampleRate
-            ? new AudioResampler(inputSampleRate, audioConfig.SampleRate)
-            : null;
-        _modelVisemeCount = modelVisemeCount > 0 ? modelVisemeCount : Frame.VisemeCount;
-        _latestVisemeResults = new float[_modelVisemeCount];
-        _probabilityBuffer = new float[_modelVisemeCount];
-        if (_latestVisemeResults.Length > 0) _latestVisemeResults[0] = 1f;
-        _frameNumber = 0;
-    }
-
-    public void ProcessAudio(ReadOnlySpan<float> audioSamples)
-    {
-        if (_disposed) return;
-
-        // Resample if needed
-        if (_resampler is null)
-        {
-            _ringBuffer.Write(audioSamples);
-        }
-        else
-        {
-            var resampled = _resampler.Resample(audioSamples);
-            _ringBuffer.Write(resampled);
-        }
-    }
-
-    public bool TryGetNextMelFrame(out float[] melFeatures)
-    {
-        return _melProcessor.TryProcessNextHop(_ringBuffer, out melFeatures);
-    }
-
-    public float[] GetInferenceBuffer()
-    {
-        return _probabilityBuffer;
-    }
-
-    public void UpdateLatestResults(float[] visemeProbs)
-    {
-        if (_disposed || visemeProbs == null || visemeProbs.Length == 0) return;
-
-        // Apply smoothing over overlapping indices; ignore extras
-        int n = Math.Min(_latestVisemeResults.Length, visemeProbs.Length);
-        for (int i = 0; i < n; i++)
-        {
-            _latestVisemeResults[i] = _latestVisemeResults[i] * _smoothing + visemeProbs[i] * (1f - _smoothing);
-        }
-    }
-
-    public void UpdateFrame(ref Frame frame)
-    {
-        if (_disposed) return;
-
-        frame.frameNumber = ++_frameNumber;
-        frame.frameDelay = 0;
-
-        // Copy model visemes into OVR frame with truncate/pad
-        int copyCount = Math.Min(_latestVisemeResults.Length, frame.Visemes.Length);
-        Array.Copy(_latestVisemeResults, frame.Visemes, copyCount);
-        if (copyCount < frame.Visemes.Length)
-        {
-            Array.Clear(frame.Visemes, copyCount, frame.Visemes.Length - copyCount);
-        }
-
-        // No laughter score from model
-        frame.laughterScore = 0f;
-    }
-
-    public Result SendSignal(Signals signal, int arg1, int arg2)
-    {
-        if (_disposed) return Result.Unknown;
-
-        switch (signal)
-        {
-            case Signals.VisemeSmoothing:
-                _smoothing = Math.Clamp(arg1 / 100f, 0f, 1f);
-                return Result.Success;
-            
-            default:
-                return Result.Success; // Ignore unsupported signals
-        }
-    }
-
-    public void Reset()
-    {
-        if (_disposed) return;
-
-        _ringBuffer.Clear();
-        Array.Clear(_latestVisemeResults);
-        if (_latestVisemeResults.Length > 0) _latestVisemeResults[0] = 1f;
-        _frameNumber = 0;
-    }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _ringBuffer?.Dispose();
-            _melProcessor?.Dispose();
-            _disposed = true;
-        }
-    }
-}
-
-/// <summary>
-/// Model configuration loaded from config.json
-/// </summary>
-public class ModelConfig
-{
-    public ModelInfo? model { get; set; }
-    public AudioInfo? audio { get; set; }
-    public TrainingInfo? training { get; set; }
-}
-
-public class ModelInfo
-{
-    public int num_visemes { get; set; }
-    public string? name { get; set; }
-}
-
-public class TrainingInfo
-{
-    public bool multi_label { get; set; }
-}
-
-public class AudioInfo
-{
-    public int sample_rate { get; set; }
-    public int hop_length_ms { get; set; }
-    public int window_length_ms { get; set; }
-    public int n_mels { get; set; }
-    public float fmin { get; set; }
-    public float fmax { get; set; }
-    public int n_fft { get; set; }
-    public string? normalization { get; set; }
-    public float fps { get; set; }
 }

@@ -26,7 +26,7 @@ public sealed class OVRLipSyncContext : IDisposable
         if (_context == 0) return;
 
         int smoothInt = Clamp((int)(Math.Clamp(Smoothing, 0f, 1f) * 100f), 0, 100);
-        _ = _ovr.SendSignal(_context, Signals.VisemeSmoothing, smoothInt, 0);
+        _ = _ovr.SendSignal(_context, Signals.VisemeSmoothing, smoothInt);
     }
 
     public void Dispose()

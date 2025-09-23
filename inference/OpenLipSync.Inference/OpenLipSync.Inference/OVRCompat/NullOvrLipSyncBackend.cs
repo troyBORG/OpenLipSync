@@ -31,7 +31,7 @@ public sealed class NullOvrLipSyncBackend : IOvrLipSyncBackend
 
     public Result ResetContext(uint context) => _initialized ? Result.Success : Result.Unknown;
 
-    public Result SendSignal(uint context, Signals signal, int arg1, int arg2) => _initialized ? Result.Success : Result.Unknown;
+    public Result SendSignal(uint context, Signals signal, int arg1) => _initialized ? Result.Success : Result.Unknown;
 
     public Result ProcessFrameFloat(uint context, ReadOnlySpan<float> audio, bool stereo, ref Frame frame)
     {
