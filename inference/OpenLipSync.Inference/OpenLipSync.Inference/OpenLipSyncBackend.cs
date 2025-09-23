@@ -177,8 +177,9 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
             // Try to get mel features and run inference
             while (audioContext.TryGetNextMelFrame(out var melFeatures))
             {
-                var visemeProbs = RunInference(melFeatures);
-                audioContext.UpdateLatestResults(visemeProbs);
+                // Run inference into reusable buffer and update smoothed results
+                RunInferenceInto(melFeatures, audioContext.GetInferenceBuffer());
+                audioContext.UpdateLatestResults(audioContext.GetInferenceBuffer());
             }
 
             // Update frame with latest results
@@ -331,18 +332,14 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         }
     }
 
-    private float[] RunInference(float[] melFeatures)
+    private void RunInferenceInto(float[] melFeatures, float[] destination)
     {
-        if (_onnxSession == null || _audioConfig == null) return new float[Frame.VisemeCount];
+        if (_onnxSession == null || _audioConfig == null) { Array.Clear(destination); return; }
 
         try
         {
             // Prepare input tensor: [batch=1, time=1, features=n_mels]
-            var inputTensor = new DenseTensor<float>(new[] { 1, 1, melFeatures.Length });
-            for (int i = 0; i < melFeatures.Length; i++)
-            {
-                inputTensor[0, 0, i] = melFeatures[i];
-            }
+            var inputTensor = new DenseTensor<float>(melFeatures, new[] { 1, 1, melFeatures.Length });
 
             // Create input dictionary
             var inputs = new List<NamedOnnxValue>
@@ -357,24 +354,25 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
             var outputTensor = results.First().AsTensor<float>();
             
             // Read logits
-            int numVisemes = _numVisemes;
-            var logits = new float[numVisemes];
-            for (int i = 0; i < numVisemes; i++)
-            {
-                logits[i] = outputTensor[0, 0, i];
-            }
+            int numVisemes = Math.Min(destination.Length, _numVisemes);
+            var logits = System.Buffers.ArrayPool<float>.Shared.Rent(numVisemes);
+            for (int i = 0; i < numVisemes; i++) logits[i] = outputTensor[0, 0, i];
 
-            return _isMultiLabel ? Sigmoid(logits) : Softmax(logits);
+            var probs = _isMultiLabel ? Sigmoid(logits.AsSpan(0, numVisemes)) : Softmax(logits.AsSpan(0, numVisemes));
+            // Copy into destination (truncate/pad)
+            int copy = Math.Min(destination.Length, probs.Length);
+            Array.Copy(probs, destination, copy);
+            if (copy < destination.Length) Array.Clear(destination, copy, destination.Length - copy);
+            System.Buffers.ArrayPool<float>.Shared.Return(logits);
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"Inference error: {ex.Message}");
-            // Keep internal arrays consistent with model viseme count
-            return new float[_numVisemes > 0 ? _numVisemes : VISEME_COUNT];
+            Array.Clear(destination);
         }
     }
 
-    private static float[] Softmax(float[] logits)
+    private static float[] Softmax(ReadOnlySpan<float> logits)
     {
         var probs = new float[logits.Length];
         float maxLogit = float.MinValue;
@@ -405,7 +403,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         return probs;
     }
 
-    private static float[] Sigmoid(float[] logits)
+    private static float[] Sigmoid(ReadOnlySpan<float> logits)
     {
         var probs = new float[logits.Length];
         for (int i = 0; i < logits.Length; i++)
@@ -448,6 +446,7 @@ internal sealed class AudioContext : IDisposable
     private readonly AudioResampler? _resampler;
     private readonly int _modelVisemeCount;
     private readonly float[] _latestVisemeResults;
+    private readonly float[] _probabilityBuffer; // reused buffer sized to model visemes
     private float _smoothing = 0.7f;
     private int _frameNumber;
     private bool _disposed;
@@ -459,6 +458,7 @@ internal sealed class AudioContext : IDisposable
         _resampler = resampler;
         _modelVisemeCount = modelVisemeCount > 0 ? modelVisemeCount : Frame.VisemeCount;
         _latestVisemeResults = new float[_modelVisemeCount];
+        _probabilityBuffer = new float[_modelVisemeCount];
         if (_latestVisemeResults.Length > 0) _latestVisemeResults[0] = 1f;
         _frameNumber = 0;
     }
@@ -477,6 +477,11 @@ internal sealed class AudioContext : IDisposable
     public bool TryGetNextMelFrame(out float[] melFeatures)
     {
         return _melProcessor.TryProcessNextHop(_ringBuffer, out melFeatures);
+    }
+
+    public float[] GetInferenceBuffer()
+    {
+        return _probabilityBuffer;
     }
 
     public void UpdateLatestResults(float[] visemeProbs)

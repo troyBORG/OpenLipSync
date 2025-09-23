@@ -55,6 +55,8 @@ public sealed class MelSpectrogramProcessor : IDisposable
     private readonly Complex[] _fftInput;
     private readonly Complex[] _fftOutput;
     private readonly float[,] _melFilterBank;
+    private readonly float[] _powerSpectrum; // reused per hop
+    private readonly float[] _melSpectrum;   // reused per hop (returned)
     private readonly float[] _windowBuffer;
     private readonly FFTProcessor _fft;
     
@@ -79,6 +81,8 @@ public sealed class MelSpectrogramProcessor : IDisposable
         _windowBuffer = new float[_windowLength];
         _previousSamples = new float[_windowLength - _hopLength];
         _melFilterBank = CreateMelFilterBank();
+        _powerSpectrum = new float[_nFft / 2 + 1];
+        _melSpectrum = new float[_nMels];
         _fft = new FFTProcessor(_nFft);
     }
 
@@ -128,33 +132,31 @@ public sealed class MelSpectrogramProcessor : IDisposable
         // Compute FFT
         _fft.Forward(_fftInput, _fftOutput);
 
-        // Compute power spectrum (magnitude squared)
-        var powerSpectrum = new float[_nFft / 2 + 1];
-        for (int i = 0; i < powerSpectrum.Length; i++)
+        // Compute power spectrum (magnitude squared) into reused buffer
+        for (int i = 0; i < _powerSpectrum.Length; i++)
         {
-            powerSpectrum[i] = (float)(_fftOutput[i].Magnitude * _fftOutput[i].Magnitude);
+            _powerSpectrum[i] = (float)(_fftOutput[i].Magnitude * _fftOutput[i].Magnitude);
         }
 
-        // Apply mel filter bank
-        var melSpectrum = new float[_nMels];
+        // Apply mel filter bank into reused mel buffer
         for (int mel = 0; mel < _nMels; mel++)
         {
             float sum = 0f;
-            for (int bin = 0; bin < powerSpectrum.Length; bin++)
+            for (int bin = 0; bin < _powerSpectrum.Length; bin++)
             {
-                sum += powerSpectrum[bin] * _melFilterBank[mel, bin];
+                sum += _powerSpectrum[bin] * _melFilterBank[mel, bin];
             }
-            melSpectrum[mel] = sum;
+            _melSpectrum[mel] = sum;
         }
 
         // Convert to log scale (dB) from power spectrum.
         // Use small floor like torchaudio/librosa to avoid log(0).
         for (int i = 0; i < _nMels; i++)
         {
-            melSpectrum[i] = 10f * MathF.Log10(MathF.Max(melSpectrum[i], 1e-10f));
+            _melSpectrum[i] = 10f * MathF.Log10(MathF.Max(_melSpectrum[i], 1e-10f));
         }
 
-        return melSpectrum;
+        return _melSpectrum;
     }
 
     /// <summary>
@@ -170,22 +172,14 @@ public sealed class MelSpectrogramProcessor : IDisposable
     /// </summary>
     public bool TryProcessNextHop(AudioRingBuffer ringBuffer, out float[] melFeatures)
     {
-        if (!CanProcessHop(ringBuffer))
-        {
-            melFeatures = null;
-            return false;
-        }
+        if (!CanProcessHop(ringBuffer)) { melFeatures = Array.Empty<float>(); return false; }
 
         Span<float> hopBuffer = stackalloc float[_hopLength];
         int read = ringBuffer.Read(hopBuffer, _hopLength);
         
-        if (read == _hopLength)
-        {
-            melFeatures = ProcessHop(hopBuffer);
-            return true;
-        }
+        if (read == _hopLength) { melFeatures = ProcessHop(hopBuffer); return true; }
 
-        melFeatures = null;
+        melFeatures = Array.Empty<float>();
         return false;
     }
 
