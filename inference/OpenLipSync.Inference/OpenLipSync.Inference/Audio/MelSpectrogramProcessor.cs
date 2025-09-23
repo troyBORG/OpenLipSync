@@ -299,7 +299,6 @@ public sealed class MelSpectrogramProcessor : IDisposable
 
 /// <summary>
 /// Simple FFT processor using managed implementation.
-/// For production, consider using FFTW or Intel MKL for better performance.
 /// </summary>
 internal sealed class FFTProcessor : IDisposable
 {

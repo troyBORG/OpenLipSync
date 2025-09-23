@@ -34,7 +34,7 @@ public sealed class AudioResampler : IDisposable
         _inputSampleRate = inputSampleRate;
         _outputSampleRate = outputSampleRate;
         _inputPerOutput = (double)inputSampleRate / outputSampleRate;
-        _ratio = _inputPerOutput; // Keep compatibility with existing API
+        _ratio = _inputPerOutput;
 
         _filterTaps = filterTaps;
         _halfTaps = filterTaps / 2;

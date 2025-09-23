@@ -22,7 +22,6 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
     private InferenceSession? _onnxSession;
     private ModelConfig? _modelConfig;
     private AudioProcessingConfig? _audioConfig;
-    private AudioResampler? _resampler;
     private uint _nextContextId = 1;
     private int _inputSampleRate;
     private bool _initialized;
@@ -51,14 +50,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
             // Load ONNX model and configuration
             if (!LoadModel())
             {
-                return Result.MissingDLL; // Model file not found
-            }
-
-            // Create resampler if needed (use actual target sample rate from config)
-            int targetSampleRate = _audioConfig?.SampleRate ?? 16000; // fallback to 16kHz if config not loaded
-            if (sampleRate != targetSampleRate)
-            {
-                _resampler = new AudioResampler(sampleRate, targetSampleRate);
+                return Result.Unknown; // Model not found or failed to load
             }
 
             _initialized = true;
@@ -84,11 +76,9 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
             }
             _contexts.Clear();
 
-            // Dispose model and resampler
+            // Dispose model
             _onnxSession?.Dispose();
             _onnxSession = null;
-            _resampler?.Dispose();
-            _resampler = null;
 
             _initialized = false;
         }
@@ -100,8 +90,9 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
         try
         {
-            var audioContext = new AudioContext(_inputSampleRate, _resampler, _audioConfig, _numVisemes);
-            context = _nextContextId++;
+            var audioContext = new AudioContext(_inputSampleRate, _audioConfig, _numVisemes);
+            Interlocked.Increment(ref _nextContextId);
+            context = _nextContextId;
             _contexts[context] = audioContext;
             
             return Result.Success;
@@ -114,8 +105,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
     public Result CreateContextWithModelFile(ref uint context, ContextProviders provider, string modelPath, int sampleRate = 0, bool enableAcceleration = false)
     {
-        // For now, use the same model for all contexts
-        // In future, could support loading different models per context
+        // Uses the same model for all contexts
         return CreateContext(ref context, provider, sampleRate, enableAcceleration);
     }
 
@@ -168,11 +158,16 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
         try
         {
-            // Convert stereo to mono if needed
-            var monoAudio = stereo ? ConvertStereoToMono(audio) : audio.ToArray();
-
-            // Process audio through context
-            audioContext.ProcessAudio(monoAudio);
+            // Convert stereo to mono if needed; avoid allocation when already mono
+            if (stereo)
+            {
+                var monoAudio = ConvertStereoToMono(audio);
+                audioContext.ProcessAudio(monoAudio);
+            }
+            else
+            {
+                audioContext.ProcessAudio(audio);
+            }
 
             // Try to get mel features and run inference
             while (audioContext.TryGetNextMelFrame(out var melFeatures))
@@ -341,29 +336,51 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
             // Prepare input tensor: [batch=1, time=1, features=n_mels]
             var inputTensor = new DenseTensor<float>(melFeatures, new[] { 1, 1, melFeatures.Length });
 
-            // Create input dictionary
-            var inputs = new List<NamedOnnxValue>
-            {
-                NamedOnnxValue.CreateFromTensor("audio_features", inputTensor)
-            };
-
             // Run inference
-            using var results = _onnxSession.Run(inputs);
-            
+            using var results = _onnxSession.Run(new[] { NamedOnnxValue.CreateFromTensor("audio_features", inputTensor) });
+
             // Extract output tensor: [batch=1, time=1, classes=num_visemes]
             var outputTensor = results.First().AsTensor<float>();
-            
-            // Read logits
-            int numVisemes = Math.Min(destination.Length, _numVisemes);
-            var logits = System.Buffers.ArrayPool<float>.Shared.Rent(numVisemes);
-            for (int i = 0; i < numVisemes; i++) logits[i] = outputTensor[0, 0, i];
 
-            var probs = _isMultiLabel ? Sigmoid(logits.AsSpan(0, numVisemes)) : Softmax(logits.AsSpan(0, numVisemes));
-            // Copy into destination (truncate/pad)
-            int copy = Math.Min(destination.Length, probs.Length);
-            Array.Copy(probs, destination, copy);
-            if (copy < destination.Length) Array.Clear(destination, copy, destination.Length - copy);
-            System.Buffers.ArrayPool<float>.Shared.Return(logits);
+            // Compute probabilities directly into destination (no intermediate arrays)
+            int numVisemes = Math.Min(destination.Length, _numVisemes);
+            if (_isMultiLabel)
+            {
+                // Sigmoid in-place
+                for (int i = 0; i < numVisemes; i++)
+                {
+                    float x = outputTensor[0, 0, i];
+                    x = Math.Clamp(x, -50f, 50f);
+                    destination[i] = 1f / (1f + MathF.Exp(-x));
+                }
+            }
+            else
+            {
+                // Softmax in-place
+                float maxLogit = float.MinValue;
+                for (int i = 0; i < numVisemes; i++)
+                {
+                    float v = outputTensor[0, 0, i];
+                    if (v > maxLogit) maxLogit = v;
+                }
+                float sum = 0f;
+                for (int i = 0; i < numVisemes; i++)
+                {
+                    float e = MathF.Exp(outputTensor[0, 0, i] - maxLogit);
+                    destination[i] = e;
+                    sum += e;
+                }
+                if (sum > 0f)
+                {
+                    float inv = 1f / sum;
+                    for (int i = 0; i < numVisemes; i++) destination[i] *= inv;
+                }
+                else
+                {
+                    Array.Clear(destination, 0, numVisemes);
+                }
+            }
+            if (numVisemes < destination.Length) Array.Clear(destination, numVisemes, destination.Length - numVisemes);
         }
         catch (Exception ex)
         {
@@ -372,48 +389,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         }
     }
 
-    private static float[] Softmax(ReadOnlySpan<float> logits)
-    {
-        var probs = new float[logits.Length];
-        float maxLogit = float.MinValue;
-        
-        // Find max for numerical stability
-        for (int i = 0; i < logits.Length; i++)
-        {
-            if (logits[i] > maxLogit) maxLogit = logits[i];
-        }
-
-        // Compute exp and sum
-        float sum = 0f;
-        for (int i = 0; i < logits.Length; i++)
-        {
-            probs[i] = MathF.Exp(logits[i] - maxLogit);
-            sum += probs[i];
-        }
-
-        // Normalize
-        if (sum > 0f)
-        {
-            for (int i = 0; i < probs.Length; i++)
-            {
-                probs[i] /= sum;
-            }
-        }
-
-        return probs;
-    }
-
-    private static float[] Sigmoid(ReadOnlySpan<float> logits)
-    {
-        var probs = new float[logits.Length];
-        for (int i = 0; i < logits.Length; i++)
-        {
-            float x = logits[i];
-            x = Math.Clamp(x, -50f, 50f);
-            probs[i] = 1f / (1f + MathF.Exp(-x));
-        }
-        return probs;
-    }
+    // Removed allocating Softmax/Sigmoid helpers; compute directly into destination in RunInferenceInto
 
     private static float[] ConvertStereoToMono(ReadOnlySpan<float> stereoAudio)
     {
@@ -451,11 +427,13 @@ internal sealed class AudioContext : IDisposable
     private int _frameNumber;
     private bool _disposed;
 
-    public AudioContext(int inputSampleRate, AudioResampler? resampler, AudioProcessingConfig audioConfig, int modelVisemeCount)
+    public AudioContext(int inputSampleRate, AudioProcessingConfig audioConfig, int modelVisemeCount)
     {
         _ringBuffer = new AudioRingBuffer(audioConfig.SampleRate * 3); // 3 seconds at target sample rate
         _melProcessor = new MelSpectrogramProcessor(audioConfig);
-        _resampler = resampler;
+        _resampler = inputSampleRate != audioConfig.SampleRate
+            ? new AudioResampler(inputSampleRate, audioConfig.SampleRate)
+            : null;
         _modelVisemeCount = modelVisemeCount > 0 ? modelVisemeCount : Frame.VisemeCount;
         _latestVisemeResults = new float[_modelVisemeCount];
         _probabilityBuffer = new float[_modelVisemeCount];
@@ -463,15 +441,20 @@ internal sealed class AudioContext : IDisposable
         _frameNumber = 0;
     }
 
-    public void ProcessAudio(float[] audioSamples)
+    public void ProcessAudio(ReadOnlySpan<float> audioSamples)
     {
         if (_disposed) return;
 
         // Resample if needed
-        var targetSamples = _resampler?.Resample(audioSamples) ?? audioSamples;
-        
-        // Add to ring buffer
-        _ringBuffer.Write(targetSamples);
+        if (_resampler is null)
+        {
+            _ringBuffer.Write(audioSamples);
+        }
+        else
+        {
+            var resampled = _resampler.Resample(audioSamples);
+            _ringBuffer.Write(resampled);
+        }
     }
 
     public bool TryGetNextMelFrame(out float[] melFeatures)
@@ -511,7 +494,7 @@ internal sealed class AudioContext : IDisposable
             Array.Clear(frame.Visemes, copyCount, frame.Visemes.Length - copyCount);
         }
 
-        // Set laughter score to 0 for now (could be enhanced with laughter detection)
+        // No laughter score from model
         frame.laughterScore = 0f;
     }
 
