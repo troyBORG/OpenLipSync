@@ -22,6 +22,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
     private InferenceSession? _onnxSession;
     private ModelConfig? _modelConfig;
     private AudioProcessingConfig? _audioConfig;
+    private string? _defaultModelPath;
     private uint _nextContextId = 1;
     private int _inputSampleRate;
     private bool _initialized;
@@ -33,6 +34,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
     public bool IsInitialized => _initialized;
     public int SampleRate => _inputSampleRate;
+    public string? DefaultModelPath { get => _defaultModelPath; set => _defaultModelPath = value; }
 
     /// <summary>
     /// Initialize the backend with the specified audio parameters.
@@ -47,8 +49,8 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         {
             _inputSampleRate = sampleRate;
 
-            // Load ONNX model and configuration
-            if (!LoadModel())
+            // Load ONNX model and configuration using precedence (no preferred path here)
+            if (!LoadModel(null))
             {
                 return Result.Unknown; // Model not found or failed to load
             }
@@ -86,7 +88,12 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
     public Result CreateContext(ref uint context, ContextProviders provider, int sampleRate = 0, bool enableAcceleration = false)
     {
-        if (!_initialized || _audioConfig == null) return Result.CannotCreateContext;
+        if (!_initialized) return Result.Unknown;
+
+        if (_audioConfig == null)
+        {
+            if (!LoadModel(null)) return Result.CannotCreateContext;
+        }
 
         try
         {
@@ -105,7 +112,11 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
     public Result CreateContextWithModelFile(ref uint context, ContextProviders provider, string modelPath, int sampleRate = 0, bool enableAcceleration = false)
     {
-        // Uses the same model for all contexts
+        if (!_initialized) return Result.Unknown;
+
+        // Load/replace model based on explicit per-context override (affects backend session in this implementation)
+        if (!LoadModel(modelPath)) return Result.CannotCreateContext;
+
         return CreateContext(ref context, provider, sampleRate, enableAcceleration);
     }
 
@@ -203,80 +214,53 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         return ProcessFrameFloat(context, floatAudio, stereo, ref frame);
     }
 
-    private bool LoadModel()
+    private bool LoadModel(string? preferredModelPath)
     {
         try
         {
-            // Look for model files, preferring override via environment variable first
-            var modelPaths = new[]
-            {
-                "model.onnx",
-                "model/model.onnx",
-                "export/model.onnx"
-            };
-
             string? modelPath = null;
             string? configPath = null;
 
-            // Environment override (file or directory)
-            var envOverride = Environment.GetEnvironmentVariable("OPENLIPSYNC_MODEL_PATH");
-            if (!string.IsNullOrWhiteSpace(envOverride))
-            {
-                try
-                {
-                    if (File.Exists(envOverride))
-                    {
-                        modelPath = envOverride;
-                        var dir = Path.GetDirectoryName(envOverride) ?? "";
-                        var potentialConfigPath = Path.Combine(dir, "config.json");
-                        if (File.Exists(potentialConfigPath))
-                        {
-                            configPath = potentialConfigPath;
-                        }
-                    }
-                    else if (Directory.Exists(envOverride))
-                    {
-                        var candidates = new[]
-                        {
-                            Path.Combine(envOverride, "model.onnx"),
-                            Path.Combine(envOverride, "model", "model.onnx"),
-                            Path.Combine(envOverride, "export", "model.onnx"),
-                        };
-                        foreach (var p in candidates)
-                        {
-                            if (File.Exists(p))
-                            {
-                                modelPath = p;
-                                var dir = Path.GetDirectoryName(p) ?? "";
-                                var potentialConfigPath = Path.Combine(dir, "config.json");
-                                if (File.Exists(potentialConfigPath))
-                                {
-                                    configPath = potentialConfigPath;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-                catch { /* ignore and fall back */ }
-            }
+            // 1) Preferred (per-context) override
+            ResolveFrom(preferredModelPath, ref modelPath, ref configPath);
 
-            // Fallback: search standard locations in working directory tree
+            // 2) Backend default path
+            if (modelPath == null)
+                ResolveFrom(_defaultModelPath, ref modelPath, ref configPath);
+
+            // 3) Environment override
+            if (modelPath == null)
+                ResolveFrom(Environment.GetEnvironmentVariable("OPENLIPSYNC_MODEL_PATH"), ref modelPath, ref configPath);
+
+            // 4) Workspace discovery
             if (modelPath == null)
             {
-                foreach (var path in modelPaths)
+                var standard = new[] { "model.onnx", "model/model.onnx", "export/model.onnx" };
+                foreach (var path in standard)
                 {
                     if (File.Exists(path))
                     {
                         modelPath = path;
                         var dir = Path.GetDirectoryName(path) ?? "";
                         var potentialConfigPath = Path.Combine(dir, "config.json");
-                        if (File.Exists(potentialConfigPath))
-                        {
-                            configPath = potentialConfigPath;
-                        }
+                        if (File.Exists(potentialConfigPath)) configPath = potentialConfigPath;
                         break;
                     }
+                }
+            }
+
+            // 4b) Best candidate under export/* if still not found
+            if (modelPath == null && Directory.Exists("export"))
+            {
+                var best = Directory.EnumerateFiles("export", "model.onnx", SearchOption.AllDirectories)
+                                    .OrderByDescending(File.GetLastWriteTimeUtc)
+                                    .FirstOrDefault();
+                if (best != null)
+                {
+                    modelPath = best;
+                    var dir = Path.GetDirectoryName(best) ?? "";
+                    var potentialConfigPath = Path.Combine(dir, "config.json");
+                    if (File.Exists(potentialConfigPath)) configPath = potentialConfigPath;
                 }
             }
 
@@ -324,6 +308,46 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         {
             System.Diagnostics.Debug.WriteLine($"Failed to load model: {ex.Message}");
             return false;
+        }
+
+        static void ResolveFrom(string? pathOrDir, ref string? modelPath, ref string? configPath)
+        {
+            if (modelPath != null) return;
+            if (string.IsNullOrWhiteSpace(pathOrDir)) return;
+
+            try
+            {
+                if (File.Exists(pathOrDir))
+                {
+                    modelPath = pathOrDir;
+                    var dir = Path.GetDirectoryName(pathOrDir) ?? "";
+                    var cfg = Path.Combine(dir, "config.json");
+                    if (File.Exists(cfg)) configPath = cfg;
+                    return;
+                }
+
+                if (Directory.Exists(pathOrDir))
+                {
+                    var candidates = new[]
+                    {
+                        Path.Combine(pathOrDir, "model.onnx"),
+                        Path.Combine(pathOrDir, "model", "model.onnx"),
+                        Path.Combine(pathOrDir, "export", "model.onnx"),
+                    };
+                    foreach (var p in candidates)
+                    {
+                        if (File.Exists(p))
+                        {
+                            modelPath = p;
+                            var dir = Path.GetDirectoryName(p) ?? "";
+                            var cfg = Path.Combine(dir, "config.json");
+                            if (File.Exists(cfg)) configPath = cfg;
+                            return;
+                        }
+                    }
+                }
+            }
+            catch { }
         }
     }
 
