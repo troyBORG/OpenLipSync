@@ -1,6 +1,8 @@
+using System.Text.Json.Serialization;
+
 namespace OpenLipSync.Inference;
 
 public class TrainingInfo
 {
-    public bool MultiLabel { get; set; }
+    [JsonPropertyName("multi_label")] public bool MultiLabel { get; set; }
 }

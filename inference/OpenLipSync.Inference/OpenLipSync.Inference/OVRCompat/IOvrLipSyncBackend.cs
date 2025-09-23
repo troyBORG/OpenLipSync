@@ -2,6 +2,9 @@ namespace OpenLipSync.Inference.OVRCompat;
 
 public interface IOvrLipSyncBackend : IDisposable
 {
+    // Last error message for diagnostics when a call returns non-success
+    string? LastError { get; }
+
     Result Initialize(int sampleRate, int bufferSize);
     void Shutdown();
 

@@ -3,16 +3,19 @@ namespace OpenLipSync.Inference.OVRCompat;
 public sealed class NullOvrLipSyncBackend : IOvrLipSyncBackend
 {
     private bool _initialized;
+    public string? LastError { get; private set; }
 
     public Result Initialize(int sampleRate, int bufferSize)
     {
         _initialized = true;
+        LastError = null;
         return Result.Success;
     }
 
     public void Shutdown()
     {
         _initialized = false;
+        LastError = null;
     }
 
     public void Dispose() { }

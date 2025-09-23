@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace OpenLipSync.Inference;
 
 /// <summary>
@@ -5,7 +7,7 @@ namespace OpenLipSync.Inference;
 /// </summary>
 public class ModelConfig
 {
-    public ModelInfo? Model { get; set; }
-    public AudioInfo? Audio { get; set; }
-    public TrainingInfo? Training { get; set; }
+    [JsonPropertyName("model")] public ModelInfo? Model { get; set; }
+    [JsonPropertyName("audio")] public AudioInfo? Audio { get; set; }
+    [JsonPropertyName("training")] public TrainingInfo? Training { get; set; }
 }

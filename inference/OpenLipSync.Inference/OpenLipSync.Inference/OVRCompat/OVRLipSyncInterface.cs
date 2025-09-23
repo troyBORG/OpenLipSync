@@ -20,6 +20,8 @@ public sealed class OVRLipSyncInterface : IDisposable
         _initResult = _backend.Initialize(sampleRate, frameSize);
     }
 
+    public string? GetLastError() => _backend.LastError;
+
     public void Dispose()
     {
         _backend.Shutdown();

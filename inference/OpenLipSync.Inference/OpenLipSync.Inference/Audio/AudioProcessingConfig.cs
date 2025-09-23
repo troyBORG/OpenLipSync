@@ -21,8 +21,8 @@ public class AudioProcessingConfig
         return new AudioProcessingConfig
         {
             SampleRate = audio.SampleRate,
-            HopLengthSamples = audio.SampleRate * audio.HopLengthMs / 1000,
-            WindowLengthSamples = audio.SampleRate * audio.WindowLengthMs / 1000,
+            HopLengthSamples = audio.HopLengthMs > 0 ? audio.SampleRate * audio.HopLengthMs / 1000 : (audio.SampleRate / 100),
+            WindowLengthSamples = audio.WindowLengthMs > 0 ? audio.SampleRate * audio.WindowLengthMs / 1000 : (int)(audio.SampleRate * 0.025f),
             NFft = audio.NFft,
             NMels = audio.NMels,
             FMin = audio.Fmin,

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.ML.OnnxRuntime;
@@ -24,6 +25,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
     private int _inputSampleRate;
     private bool _initialized;
     private bool _disposed;
+    private string? _lastError;
     
     // Cached model properties to avoid per-frame checks
     private bool _isMultiLabel;
@@ -32,6 +34,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
     public bool IsInitialized => _initialized;
     public int SampleRate => _inputSampleRate;
     public string? DefaultModelPath { get => _defaultModelPath; set => _defaultModelPath = value; }
+    public string? LastError => _lastError;
 
     /// <summary>
     /// Initialize the backend with the specified audio parameters.
@@ -58,6 +61,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         catch (Exception ex)
         {
             Debug.WriteLine($"OpenLipSync initialization failed: {ex.Message}");
+            _lastError = $"Initialization failed: {ex.Message}";
             return Result.CannotCreateContext;
         }
     }
@@ -103,6 +107,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         }
         catch
         {
+            _lastError = "Failed to create audio context";
             return Result.CannotCreateContext;
         }
     }
@@ -157,10 +162,11 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
 
     public Result ProcessFrameFloat(uint context, ReadOnlySpan<float> audio, bool stereo, ref Frame frame)
     {
-        if (!_initialized || _onnxSession == null) return Result.Unknown;
+        if (!_initialized || _onnxSession == null) { _lastError = "Backend not initialized or model not loaded"; return Result.Unknown; }
 
         if (!_contexts.TryGetValue(context, out var audioContext))
         {
+            _lastError = $"Invalid context: {context}";
             return Result.InvalidParam;
         }
 
@@ -193,13 +199,14 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         catch (Exception ex)
         {
             Debug.WriteLine($"ProcessFrameFloat error: {ex.Message}");
+            _lastError = $"ProcessFrameFloat: {ex.Message}";
             return Result.Unknown;
         }
     }
 
     public Result ProcessFrameShort(uint context, ReadOnlySpan<short> audio, bool stereo, ref Frame frame)
     {
-        if (!_initialized) return Result.Unknown;
+        if (!_initialized) { _lastError = "Backend not initialized"; return Result.Unknown; }
 
         // Convert short samples to float
         var floatAudio = new float[audio.Length];
@@ -217,17 +224,18 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         {
             string? modelPath = null;
             string? configPath = null;
+            var searchLog = new List<string>();
 
             // 1) Preferred (per-context) override
-            ResolveFrom(preferredModelPath, ref modelPath, ref configPath);
+            ResolveFrom(preferredModelPath, ref modelPath, ref configPath, searchLog, label: "preferred");
 
             // 2) Backend default path
             if (modelPath == null)
-                ResolveFrom(_defaultModelPath, ref modelPath, ref configPath);
+                ResolveFrom(_defaultModelPath, ref modelPath, ref configPath, searchLog, label: "backend default");
 
             // 3) Environment override
             if (modelPath == null)
-                ResolveFrom(Environment.GetEnvironmentVariable("OPENLIPSYNC_MODEL_PATH"), ref modelPath, ref configPath);
+                ResolveFrom(Environment.GetEnvironmentVariable("OPENLIPSYNC_MODEL_PATH"), ref modelPath, ref configPath, searchLog, label: "env OPENLIPSYNC_MODEL_PATH");
 
             // 4) Workspace discovery
             if (modelPath == null)
@@ -242,6 +250,10 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
                         var potentialConfigPath = Path.Combine(dir, "config.json");
                         if (File.Exists(potentialConfigPath)) configPath = potentialConfigPath;
                         break;
+                    }
+                    else
+                    {
+                        searchLog.Add($"workspace: not found '{path}'");
                     }
                 }
             }
@@ -259,11 +271,16 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
                     var potentialConfigPath = Path.Combine(dir, "config.json");
                     if (File.Exists(potentialConfigPath)) configPath = potentialConfigPath;
                 }
+                else
+                {
+                    searchLog.Add("export scan: no model.onnx found under ./export");
+                }
             }
 
             if (modelPath == null)
             {
                 Debug.WriteLine("ONNX model file not found");
+                _lastError = "Model not found. Search steps:\n" + string.Join("\n", searchLog);
                 return false;
             }
 
@@ -286,6 +303,14 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
                     _isMultiLabel = _modelConfig.Training?.MultiLabel ?? false;
                     _numVisemes = _modelConfig.Model?.NumVisemes ?? Frame.VisemeCount;
                 }
+                else
+                {
+                    _lastError = $"Failed to parse config.json at '{configPath}'";
+                }
+            }
+            else
+            {
+                _lastError = "No config.json found next to model";
             }
 
             // Create ONNX session with CPU provider
@@ -296,7 +321,15 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
             sessionOptions.InterOpNumThreads = 1;
             sessionOptions.IntraOpNumThreads = 1;
 
-            _onnxSession = new InferenceSession(modelPath, sessionOptions);
+            try
+            {
+                _onnxSession = new InferenceSession(modelPath, sessionOptions);
+            }
+            catch (Exception exCreate)
+            {
+                _lastError = $"Failed to create ONNX session for '{modelPath}': {exCreate.Message}";
+                throw;
+            }
 
             Debug.WriteLine($"Loaded OpenLipSync model: {modelPath}");
             return true;
@@ -304,10 +337,11 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
         catch (Exception ex)
         {
             Debug.WriteLine($"Failed to load model: {ex.Message}");
+            if (string.IsNullOrEmpty(_lastError)) _lastError = $"LoadModel exception: {ex.Message}";
             return false;
         }
 
-        static void ResolveFrom(string? pathOrDir, ref string? modelPath, ref string? configPath)
+        static void ResolveFrom(string? pathOrDir, ref string? modelPath, ref string? configPath, List<string> searchLog, string label)
         {
             if (modelPath != null) return;
             if (string.IsNullOrWhiteSpace(pathOrDir)) return;
@@ -320,6 +354,7 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
                     var dir = Path.GetDirectoryName(pathOrDir) ?? "";
                     var cfg = Path.Combine(dir, "config.json");
                     if (File.Exists(cfg)) configPath = cfg;
+                    searchLog.Add($"{label}: file '{pathOrDir}'");
                     return;
                 }
 
@@ -339,12 +374,24 @@ public sealed class OpenLipSyncBackend : IOvrLipSyncBackend
                             var dir = Path.GetDirectoryName(p) ?? "";
                             var cfg = Path.Combine(dir, "config.json");
                             if (File.Exists(cfg)) configPath = cfg;
+                            searchLog.Add($"{label}: found '{p}'");
                             return;
+                        }
+                        else
+                        {
+                            searchLog.Add($"{label}: not found '{p}'");
                         }
                     }
                 }
+                else
+                {
+                    searchLog.Add($"{label}: path does not exist '{pathOrDir}'");
+                }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                searchLog.Add($"{label}: exception '{ex.Message}'");
+            }
         }
     }
 
