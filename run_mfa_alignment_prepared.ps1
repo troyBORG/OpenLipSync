@@ -146,7 +146,9 @@ $OovListFile = Join-Path $OovsDir "oovs_found_english_us_arpa.txt"
 $OovDictFile = Join-Path $OovsDir "oovs.dict"
 
 # Step 2: Generate pronunciations for OOVs using G2P, if any OOVs were found
-if (Test-Path $OovListFile -PathType Leaf -and (Get-Content $OovListFile | Select-Object -First 1)) {
+if ( (Test-Path $OovListFile -PathType Leaf) -and
+     ( (Get-Content $OovListFile -ErrorAction SilentlyContinue | Measure-Object -Line).Lines -gt 0 ) ) {
+
     Write-Status "Step 2: Generating pronunciations for OOV words..."
     & micromamba run -n mfa mfa g2p "$OovListFile" "english_us_arpa" "$OovDictFile"
     if ($LASTEXITCODE -ne 0) {
