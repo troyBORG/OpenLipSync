@@ -31,6 +31,8 @@ from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 
 # Import our modules
+# …existing imports…
+from modules.mfa_runner import ensure_aligned
 from modules.config import load_config, validate_environment, TrainingConfiguration
 from modules.data_pipeline import create_data_loaders
 from modules.tcn_model import create_model, print_model_summary
@@ -629,6 +631,8 @@ def main():
     try:
         config = load_config(args.config)
         validate_environment(config)
+        subsets = config.data.splits
+        ensure_aligned(subsets)
     except Exception as error:
         print(f"Configuration error: {error}")
         sys.exit(1)
