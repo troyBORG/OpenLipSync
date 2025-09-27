@@ -45,12 +45,11 @@ def _safe_load_audio(path: Path):
     Tries torchaudio.load; if unavailable/unsupported, falls back to soundfile.
     """
     try:
-        import torchaudio
         import warnings
-            warnings.filterwarnings(
-                "ignore",
-                message="torchaudio._backend.set_audio_backend has been deprecated.*"
-            )
+        warnings.filterwarnings(
+            "ignore",
+            message="torchaudio._backend.set_audio_backend has been deprecated.*"
+        )
         # Prefer a stable backend
         try:
             torchaudio.set_audio_backend("soundfile")
