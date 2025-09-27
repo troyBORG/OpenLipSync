@@ -36,6 +36,33 @@ class AudioSample:
     transcript: str = ""  # Text transcript
     phoneme_targets: Optional[torch.Tensor] = None  # Shape: (time_frames,)
 
+from pathlib import Path
+import torch
+
+def _safe_load_audio(path: Path):
+    """
+    Load audio as (waveform[T,C], sample_rate) with robust fallbacks.
+    Tries torchaudio.load; if unavailable/unsupported, falls back to soundfile.
+    """
+    try:
+        import torchaudio
+        # Prefer a stable backend
+        try:
+            torchaudio.set_audio_backend("soundfile")
+        except Exception:
+            # If soundfile backend isn't available, torchaudio will choose its default
+            pass
+
+        wav, sr = torchaudio.load(str(path))  # supports .wav, .flac, etc.
+        return wav, sr
+    except Exception:
+        # Fallback: pysoundfile
+        import soundfile as sf
+        import numpy as np
+        data, sr = sf.read(str(path), dtype="float32", always_2d=True)  # shape: [T, C]
+        wav = torch.from_numpy(data)            # [T, C] float32
+        wav = wav.transpose(0, 1).contiguous()  # -> [C, T] to match torchaudio.load
+        return wav, sr
 
 class AudioProcessor:
     """
@@ -83,7 +110,9 @@ class AudioProcessor:
             torch.Tensor: Mel spectrogram features, shape (time_frames, n_mels)
         """
         # Load audio using the new torchcodec-based approach
-        waveform, original_sample_rate = torchaudio.load_with_torchcodec(audio_path)
+        from pathlib import Path  # (already present at the top for the helper)
+        waveform, original_sample_rate = _safe_load_audio(Path(audio_path))
+
         
         # Ensure mono audio
         if waveform.shape[0] > 1:
@@ -787,3 +816,4 @@ if __name__ == "__main__":
     print(f"Sample speaker IDs: {batch['speaker_ids'][:3]}")
     
     print("Data pipeline test completed successfully.")
+

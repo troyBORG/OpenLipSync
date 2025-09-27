@@ -278,62 +278,56 @@ class DatasetManager:
             logger.error(f"Prepared dataset creation failed: {e}")
             return False
     
-def _run_alignment(self, dataset: str) -> bool:
-    """
-    Run MFA alignment using the prepared dataset script.
-    On Windows it prefers the PowerShell version (*.ps1), otherwise the bash script (*.sh).
-    """
-    import sys
-    import shutil
-    import subprocess
-    from pathlib import Path
+    def _run_alignment(self, dataset: str) -> bool:
+        """
+        Run MFA alignment using the prepared dataset script.
+        On Windows it prefers the PowerShell version (*.ps1), otherwise the bash script (*.sh).
+        """
+        import sys
+        import shutil
+        import subprocess
+        from pathlib import Path
 
-    try:
-        # Resolve repo root (dataset_manager.py -> modules -> training -> repo root)
-        repo_root = self.project_root if hasattr(self, "project_root") else Path(__file__).resolve().parents[2]
-        ps1 = (repo_root / "run_mfa_alignment_prepared.ps1").resolve()
-        sh  = (repo_root / "run_mfa_alignment_prepared.sh").resolve()
+        try:
+            repo_root = self.project_root if hasattr(self, "project_root") else Path(__file__).resolve().parents[2]
+            ps1 = (repo_root / "run_mfa_alignment_prepared.ps1").resolve()
+            sh  = (repo_root / "run_mfa_alignment_prepared.sh").resolve()
 
-        # Pick script based on platform and availability
-        if sys.platform.startswith("win") and ps1.exists():
-            # prefer PowerShell 7 (pwsh), fall back to Windows PowerShell
-            pwsh = shutil.which("pwsh") or shutil.which("powershell")
-            if not pwsh:
-                logger.error("PowerShell not found (need 'pwsh' or 'powershell' on PATH).")
-                return False
-            cmd = [pwsh, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1), dataset]
-            script_used = ps1
-        elif sh.exists():
-            bash = shutil.which("bash")
-            if bash:
-                cmd = [bash, str(sh), dataset]
+            if sys.platform.startswith("win") and ps1.exists():
+                pwsh = shutil.which("pwsh") or shutil.which("powershell")
+                if not pwsh:
+                    logger.error("PowerShell not found (need 'pwsh' or 'powershell' on PATH).")
+                    return False
+                cmd = [pwsh, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1), dataset]
+                script_used = ps1
+            elif sh.exists():
+                bash = shutil.which("bash")
+                cmd = [bash, str(sh), dataset] if bash else [str(sh), dataset]
+                script_used = sh
             else:
-                cmd = [str(sh), dataset]
-            script_used = sh
-        else:
-            logger.error(f"MFA alignment script not found: {ps1} or {sh}")
+                logger.error(f"MFA alignment script not found: {ps1} or {sh}")
+                return False
+
+            logger.info(f"Running MFA alignment for {dataset} using: {script_used.name}")
+            subprocess.run(cmd, check=True)
+            logger.info(f"MFA alignment completed for {dataset}")
+            return True
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"MFA alignment failed for {dataset}: returncode={e.returncode}")
+            return False
+        except FileNotFoundError as e:
+            logger.error(f"Unable to launch MFA script: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected alignment error for {dataset}: {e}")
             return False
 
-        logger.info(f"Running MFA alignment for {dataset} using: {script_used.name}")
-        subprocess.run(cmd, check=True)
-        logger.info(f"MFA alignment completed for {dataset}")
-        return True
 
-    except subprocess.CalledProcessError as e:
-        logger.error(f"MFA alignment failed for {dataset}: returncode={e.returncode}")
-        return False
-    except FileNotFoundError as e:
-        # Missing shell (pwsh/bash) or script not launchable
-        logger.error(f"Unable to launch MFA script: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Unexpected alignment error for {dataset}: {e}")
-        return False
-
-    # --- legacy lines kept (commented) so nothing is “removed” ---
-    # except FileNotFoundError:
-    #     logger.error(f"MFA alignment script not found or not executable: {mfa_script}")
-    #     return False
+        # --- legacy lines kept (commented) so nothing is “removed” ---
+        # except FileNotFoundError:
+        #     logger.error(f"MFA alignment script not found or not executable: {mfa_script}")
+        #     return False
     
     def _organize_prepared_dataset(self, dataset: str) -> bool:
         """Copy MFA alignment JSONs from cache into prepared dataset if available.
