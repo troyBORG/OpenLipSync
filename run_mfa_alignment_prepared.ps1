@@ -154,8 +154,11 @@ if ( (Test-Path $OovListFile -PathType Leaf) -and
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "G2P generation step failed, but continuing with alignment."
     }
-    # Step 3: Add OOV pronunciations to the ARPA dictionary model
-    if (Test-Path $OovDictFile -PathType Leaf -and (Get-Content $OovDictFile | Select-Object -First 1)) {
+
+    # Step 3: Add OOV pronunciations to the ARPA dictionary model (only if dict file exists and is non-empty)
+    if ( (Test-Path $OovDictFile -PathType Leaf) -and
+         ( (Get-Content $OovDictFile -ErrorAction SilentlyContinue | Measure-Object -Line).Lines -gt 0 ) ) {
+
         Write-Status "Step 3: Adding new pronunciations to ARPA dictionary model..."
         & micromamba run -n mfa mfa model add_words "english_us_arpa" "$OovDictFile"
         if ($LASTEXITCODE -ne 0) {
