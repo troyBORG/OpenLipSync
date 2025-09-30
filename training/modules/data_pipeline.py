@@ -360,8 +360,10 @@ class LibriSpeechDataset(Dataset):
         if not self.audio_files:
             raise RuntimeError(f"No audio files found in {self.dataset_dir}")
         
-        # Cache for processed samples
-        self.sample_cache = {}
+        # Optional cache for processed samples (validation/test only by default)
+        self.sample_cache: Dict[int, AudioSample] = {}
+        self.enable_cache = (not self.is_training) and bool(self.config.data.cache_validation_items)
+        self.cache_max_items = int(getattr(self.config.data, 'validation_cache_max_items', 0) or 0)
         
         # Chunk parameters
         self.min_chunk_frames = int(
@@ -387,14 +389,19 @@ class LibriSpeechDataset(Dataset):
         Returns:
             AudioSample: Processed audio with features and targets
         """
-        # Check cache first
-        if index in self.sample_cache:
+        # Check cache first (optional)
+        if self.enable_cache and index in self.sample_cache:
             audio_sample = self.sample_cache[index]
         else:
             # Load and process new sample
             audio_sample = self._process_sample(index)
-            # Cache only during validation/testing to save memory
-            if not self.is_training:
+            # Cache per policy
+            if self.enable_cache:
+                # Maintain simple size-bounded cache (FIFO eviction)
+                if self.cache_max_items > 0 and len(self.sample_cache) >= self.cache_max_items:
+                    # Pop an arbitrary (oldest-like) item deterministically
+                    first_key = next(iter(self.sample_cache.keys()))
+                    self.sample_cache.pop(first_key, None)
                 self.sample_cache[index] = audio_sample
         
         # Apply chunking for training

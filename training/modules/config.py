@@ -178,6 +178,9 @@ class DataConfig:
     silence_augment_prob: float = 0.0
     silence_noise_dbfs_range: List[float] = None
     silence_chunk_length_s: List[float] = None
+    # Validation/test caching (disabled by default to reduce RAM)
+    cache_validation_items: bool = False
+    validation_cache_max_items: int = 0
     
     def __post_init__(self):
         """Validate data parameters"""
@@ -203,6 +206,9 @@ class DataConfig:
             raise ValueError(f"silence_noise_dbfs_range upper bound must be <= 0 dBFS, got {self.silence_noise_dbfs_range}")
         if len(self.silence_chunk_length_s) != 2 or not (self.silence_chunk_length_s[0] < self.silence_chunk_length_s[1]):
             raise ValueError(f"silence_chunk_length_s must be [min_s, max_s] with min < max, got {self.silence_chunk_length_s}")
+        # Validate caching params
+        if int(self.validation_cache_max_items) < 0:
+            raise ValueError(f"validation_cache_max_items must be >= 0, got {self.validation_cache_max_items}")
 
 
 @dataclass

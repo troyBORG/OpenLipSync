@@ -170,104 +170,82 @@ class MacroF1Score:
         self.reset()
     
     def reset(self):
-        """Reset accumulated predictions and targets"""
-        self.all_predictions = []  # list of 1D arrays (labels) or 2D rows (multilabel)
-        self.all_targets = []
+        """Reset accumulated class-wise counts (streaming, memory-efficient)."""
+        # Per-class true positives, false positives, false negatives
+        self.tp = np.zeros(self.num_classes, dtype=np.int64)
+        self.fp = np.zeros(self.num_classes, dtype=np.int64)
+        self.fn = np.zeros(self.num_classes, dtype=np.int64)
     
     def update(self, predictions: torch.Tensor, targets: torch.Tensor,
                sequence_lengths: Optional[torch.Tensor] = None):
         """
-        Accumulate predictions and targets for F1 computation
-        
-        Args:
-            predictions: Model predictions, shape (batch, time, num_classes)
-            targets: Ground truth targets, shape (batch, time)
-            sequence_lengths: Actual sequence lengths, shape (batch,)
+        Update class-wise counts for F1 computation without storing all frames.
         """
+        num_classes = self.num_classes
         if self.overlap_enabled or self.multi_label:
-            # Guard: if predictions don't look like (B, T, C) with C > 1, convert single-label to one-hot
-            if predictions.ndim != 3 or predictions.shape[-1] <= 1:
-                predicted_classes = torch.argmax(predictions, dim=-1)  # (B,T)
-                num_classes = self.num_classes
-                if sequence_lengths is not None:
-                    batch_size = predictions.shape[0]
-                    for batch_idx in range(batch_size):
-                        seq_len = int(sequence_lengths[batch_idx].item())
-                        batch_predictions = predicted_classes[batch_idx, :seq_len]
-                        batch_targets = targets[batch_idx, :seq_len]
-                        y_pred = F.one_hot(batch_predictions, num_classes=num_classes).to(torch.int)
-                        y_true = F.one_hot(batch_targets, num_classes=num_classes).to(torch.int)
-                        self.all_predictions.append(y_pred.cpu().numpy())
-                        self.all_targets.append(y_true.cpu().numpy())
-                else:
-                    y_pred = F.one_hot(predicted_classes, num_classes=num_classes).to(torch.int)
-                    y_true = F.one_hot(targets, num_classes=num_classes).to(torch.int)
-                    self.all_predictions.append(y_pred.cpu().numpy())
-                    self.all_targets.append(y_true.cpu().numpy())
-                return
+            # Multilabel/overlap path: threshold probabilities and accumulate TP/FP/FN per class
             probs = ensure_probabilities(predictions, multi_label=self.multi_label)  # (B, T, C)
-            active = (probs >= self.overlap_threshold).to(torch.int)
+            active = (probs >= self.overlap_threshold)  # bool (B, T, C)
             # Ensure at least one active per frame by forcing argmax to active where needed
-            argmax_idx = torch.argmax(probs, dim=-1, keepdim=True)
-            none_active_flat = (active.sum(dim=-1) == 0)  # (B, T)
-            one_hot = F.one_hot(argmax_idx.squeeze(-1), num_classes=active.shape[-1]).to(dtype=active.dtype)  # (B, T, C)
-            force_active = (none_active_flat.unsqueeze(-1).to(dtype=active.dtype) * one_hot)
-            active = (active + force_active).clamp_max(1)
-            # y_true from targets: one-hot or binarized multi-hot
-            if targets.dim() == 3 and targets.size(-1) == self.num_classes:
-                y_true_full = (targets > 0.5).to(torch.int)
+            argmax_idx = torch.argmax(probs, dim=-1, keepdim=True)  # (B, T, 1)
+            none_active = ~active.any(dim=-1)  # (B, T)
+            one_hot = F.one_hot(argmax_idx.squeeze(-1), num_classes=num_classes).to(dtype=torch.bool)  # (B, T, C)
+            active = active | (none_active.unsqueeze(-1) & one_hot)
+            # Ground truth as multi-hot
+            if targets.dim() == 3 and targets.size(-1) == num_classes:
+                y_true = (targets > 0.5)
             else:
-                y_true_full = F.one_hot(targets, num_classes=self.num_classes).to(torch.int)
+                y_true = F.one_hot(targets, num_classes=num_classes).to(dtype=torch.bool)
+            # Apply sequence mask if provided
             if sequence_lengths is not None:
-                batch_size = predictions.shape[0]
-                for batch_idx in range(batch_size):
-                    seq_len = int(sequence_lengths[batch_idx].item())
-                    act = active[batch_idx, :seq_len, :]
-                    y_true = y_true_full[batch_idx, :seq_len, :]
-                    self.all_predictions.append(act.cpu().numpy())
-                    self.all_targets.append(y_true.cpu().numpy())
-            else:
-                self.all_predictions.append(active.cpu().numpy())
-                self.all_targets.append(y_true_full.cpu().numpy())
+                B, T = targets.shape[:2]
+                device = targets.device
+                mask_bt = (torch.arange(T, device=device).unsqueeze(0).expand(B, -1)
+                           < sequence_lengths.to(device).unsqueeze(1))  # (B, T)
+                mask_btc = mask_bt.unsqueeze(-1)
+                active = active & mask_btc
+                y_true = y_true & mask_btc
+            # Per-class counts
+            tp = (active & y_true).sum(dim=(0, 1)).cpu().numpy().astype(np.int64)
+            fp = (active & ~y_true).sum(dim=(0, 1)).cpu().numpy().astype(np.int64)
+            fn = (~active & y_true).sum(dim=(0, 1)).cpu().numpy().astype(np.int64)
+            self.tp += tp
+            self.fp += fp
+            self.fn += fn
             return
-        # Single-label path
-        predicted_classes = torch.argmax(predictions, dim=-1)  # (batch, time)
-        if sequence_lengths is not None:
-            batch_size = predictions.shape[0]
-            for batch_idx in range(batch_size):
-                seq_len = sequence_lengths[batch_idx].item()
-                batch_predictions = predicted_classes[batch_idx, :seq_len]
-                batch_targets = targets[batch_idx, :seq_len]
-                self.all_predictions.extend(batch_predictions.cpu().numpy())
-                self.all_targets.extend(batch_targets.cpu().numpy())
+        # Single-label path: accumulate via confusion counts
+        pred = torch.argmax(predictions, dim=-1)  # (B, T)
+        if targets.dim() == 3 and targets.size(-1) == num_classes:
+            targ = torch.argmax(targets, dim=-1)
         else:
-            self.all_predictions.extend(predicted_classes.cpu().numpy().flatten())
-            self.all_targets.extend(targets.cpu().numpy().flatten())
+            targ = targets
+        if sequence_lengths is not None:
+            B, T = targ.shape
+            device = targ.device
+            mask_bt = (torch.arange(T, device=device).unsqueeze(0).expand(B, -1)
+                       < sequence_lengths.to(device).unsqueeze(1))  # (B, T)
+            targ = targ[mask_bt]
+            pred = pred[mask_bt]
+        else:
+            targ = targ.reshape(-1)
+            pred = pred.reshape(-1)
+        cm_flat = torch.bincount(targ * num_classes + pred,
+                                 minlength=num_classes * num_classes)
+        cm = cm_flat.view(num_classes, num_classes).to(torch.int64)
+        diag = torch.diag(cm)
+        fp = cm.sum(dim=0) - diag
+        fn = cm.sum(dim=1) - diag
+        self.tp += diag.cpu().numpy().astype(np.int64)
+        self.fp += fp.cpu().numpy().astype(np.int64)
+        self.fn += fn.cpu().numpy().astype(np.int64)
     
     def compute(self) -> float:
-        """
-        Compute macro F1 score
-        
-        Returns:
-            float: Macro F1 score (0-100)
-        """
-        if len(self.all_predictions) == 0:
-            return 0.0
-        if self.overlap_enabled or self.multi_label:
-            # Stack to (N, C) multilabel indicator for both preds and targets
-            y_pred = np.concatenate([arr.reshape(-1, self.num_classes) for arr in self.all_predictions], axis=0)
-            y_true = np.concatenate([arr.reshape(-1, self.num_classes) for arr in self.all_targets], axis=0)
-            f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
-            return float(f1) * 100.0
-        # Single-label F1
-        f1 = f1_score(
-            self.all_targets,
-            self.all_predictions,
-            labels=list(range(self.num_classes)),
-            average='macro',
-            zero_division=0,
-        )
-        return float(f1) * 100.0
+        """Compute macro F1 score (0-100) from aggregated counts."""
+        denom = (2 * self.tp + self.fp + self.fn)
+        # Avoid division by zero
+        with np.errstate(divide='ignore', invalid='ignore'):
+            f1_per_class = np.where(denom > 0, (2 * self.tp) / denom, 0.0)
+        return float(f1_per_class.mean() * 100.0)
 
 
 class ConfusionMatrixMetric:
@@ -282,56 +260,36 @@ class ConfusionMatrixMetric:
         self.reset()
     
     def reset(self):
-        """Reset accumulated predictions and targets"""
-        self.all_predictions = []
-        self.all_targets = []
+        """Reset accumulated confusion matrix (streaming)."""
+        self.matrix = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
     
     def update(self, predictions: torch.Tensor, targets: torch.Tensor,
                sequence_lengths: Optional[torch.Tensor] = None):
-        """
-        Accumulate predictions and targets
-        
-        Args:
-            predictions: Model predictions, shape (batch, time, num_classes)
-            targets: Ground truth targets, shape (batch, time)
-            sequence_lengths: Actual sequence lengths, shape (batch,)
-        """
-        # Get predicted classes
-        predicted_classes = torch.argmax(predictions, dim=-1)  # (batch, time)
-        # Ensure targets are class indices
-        if targets.dim() == 3 and targets.size(-1) == self.num_classes:
-            targets = torch.argmax(targets, dim=-1)
-        
-        if sequence_lengths is not None:
-            # Only include frames within actual sequence length
-            batch_size = predictions.shape[0]
-            for batch_idx in range(batch_size):
-                seq_len = sequence_lengths[batch_idx].item()
-                batch_predictions = predicted_classes[batch_idx, :seq_len]
-                batch_targets = targets[batch_idx, :seq_len]
-                
-                self.all_predictions.extend(batch_predictions.cpu().numpy())
-                self.all_targets.extend(batch_targets.cpu().numpy())
+        """Accumulate confusion counts streaming without storing all frames."""
+        num_classes = self.num_classes
+        pred = torch.argmax(predictions, dim=-1)  # (B, T)
+        if targets.dim() == 3 and targets.size(-1) == num_classes:
+            targ = torch.argmax(targets, dim=-1)
         else:
-            # Include all frames
-            self.all_predictions.extend(predicted_classes.cpu().numpy().flatten())
-            self.all_targets.extend(targets.cpu().numpy().flatten())
+            targ = targets
+        if sequence_lengths is not None:
+            B, T = targ.shape
+            device = targ.device
+            mask_bt = (torch.arange(T, device=device).unsqueeze(0).expand(B, -1)
+                       < sequence_lengths.to(device).unsqueeze(1))  # (B, T)
+            targ = targ[mask_bt]
+            pred = pred[mask_bt]
+        else:
+            targ = targ.reshape(-1)
+            pred = pred.reshape(-1)
+        cm_flat = torch.bincount(targ * num_classes + pred,
+                                 minlength=num_classes * num_classes)
+        cm = cm_flat.view(num_classes, num_classes).to(torch.int64).cpu().numpy()
+        self.matrix += cm
     
     def compute(self) -> np.ndarray:
-        """
-        Compute confusion matrix
-        
-        Returns:
-            np.ndarray: Confusion matrix, shape (num_classes, num_classes)
-        """
-        if len(self.all_predictions) == 0:
-            return np.zeros((self.num_classes, self.num_classes))
-        
-        return confusion_matrix(
-            self.all_targets,
-            self.all_predictions,
-            labels=list(range(self.num_classes))
-        )
+        """Return the accumulated confusion matrix (true rows, pred cols)."""
+        return self.matrix.copy()
     
     def get_per_class_accuracy(self) -> Dict[str, float]:
         """

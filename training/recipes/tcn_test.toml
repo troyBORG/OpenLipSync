@@ -285,7 +285,7 @@ image_log_interval = 500        # Log images every N steps (if enabled)
 [experiment]
 # Experiment tracking - organize your training runs
 
-name = "audio_augmentation_full_dataset2"                              # Name for this experiment
+name = "audio_augmentation_full_dataset3"                              # Name for this experiment
 tags = ["tcn", "viseme", "100fps"]               # Tags to find related experiments
 notes = "TCN model test run with audio augmentation"  # Description of what you're testing
 
