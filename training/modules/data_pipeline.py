@@ -376,8 +376,18 @@ class LibriSpeechDataset(Dataset):
         print(f"Loaded prepared {split}: {len(self.audio_files)} utterances from {self.dataset_dir}")
     
     def __len__(self) -> int:
-        """Number of utterances in the dataset"""
-        return len(self.audio_files)
+        """Number of utterances in the dataset including extra synthetic silence items for training"""
+        base_len = len(self.audio_files)
+        if self.is_training and self.config.data.augmentation_enabled:
+            try:
+                p = float(self.config.data.silence_augment_prob)
+                if 0.0 < p <= 1.0:
+                    # Additive augmentation: expected extra count proportional to p
+                    extra = int(round(base_len * p))
+                    return base_len + extra
+            except Exception:
+                pass
+        return base_len
     
     def __getitem__(self, index: int) -> AudioSample:
         """
@@ -389,20 +399,25 @@ class LibriSpeechDataset(Dataset):
         Returns:
             AudioSample: Processed audio with features and targets
         """
-        # Check cache first (optional)
-        if self.enable_cache and index in self.sample_cache:
-            audio_sample = self.sample_cache[index]
+        base_len = len(self.audio_files)
+        # Generate synthetic silence for indices beyond base_len
+        if self.is_training and index >= base_len and self.config.data.augmentation_enabled:
+            audio_sample = self._generate_synthetic_silence_sample()
         else:
-            # Load and process new sample
-            audio_sample = self._process_sample(index)
-            # Cache per policy
-            if self.enable_cache:
-                # Maintain simple size-bounded cache (FIFO eviction)
-                if self.cache_max_items > 0 and len(self.sample_cache) >= self.cache_max_items:
-                    # Pop an arbitrary (oldest-like) item deterministically
-                    first_key = next(iter(self.sample_cache.keys()))
-                    self.sample_cache.pop(first_key, None)
-                self.sample_cache[index] = audio_sample
+            # Check cache first (optional)
+            if self.enable_cache and index in self.sample_cache:
+                audio_sample = self.sample_cache[index]
+            else:
+                # Load and process new sample
+                audio_sample = self._process_sample(index % base_len)
+                # Cache per policy
+                if self.enable_cache:
+                    # Maintain simple size-bounded cache (FIFO eviction)
+                    if self.cache_max_items > 0 and len(self.sample_cache) >= self.cache_max_items:
+                        # Pop an arbitrary (oldest-like) item deterministically
+                        first_key = next(iter(self.sample_cache.keys()))
+                        self.sample_cache.pop(first_key, None)
+                    self.sample_cache[index] = audio_sample
         
         # Apply chunking for training
         if self.is_training:
@@ -437,24 +452,8 @@ class LibriSpeechDataset(Dataset):
         with open(lab_file, 'r', encoding='utf-8') as f:
             transcript = f.read().strip()
         
-        # Optional: replace with synthetic near-silence sample with some probability
-        use_silence_aug = False
-        if self.is_training and self.config.data.augmentation_enabled:
-            try:
-                if random.random() < float(self.config.data.silence_augment_prob):
-                    use_silence_aug = True
-            except Exception:
-                use_silence_aug = False
-
-        if use_silence_aug:
-            # Generate near-silence waveform and targets set to silence
-            sr = self.config.audio.sample_rate
-            min_s, max_s = self.config.data.silence_chunk_length_s
-            waveform = self.audio_augment.synthesize_silence_or_near_silence(sr, min_s, max_s)
-            audio_features = self.audio_processor.waveform_to_mel_features(waveform, sr)
-        else:
-            # Process audio features (this loads and processes the audio)
-            audio_features = self.audio_processor.load_and_process_audio(audio_file)
+        # Process audio features (original sample)
+        audio_features = self.audio_processor.load_and_process_audio(audio_file)
         
         # Apply normalization according to configuration
         audio_features = self.audio_processor.normalize_features(audio_features)
@@ -466,7 +465,7 @@ class LibriSpeechDataset(Dataset):
         phoneme_targets = None
         viseme_targets = None
         
-        if json_file.exists() and not use_silence_aug:
+        if json_file.exists():
             try:
                 with open(json_file, 'r', encoding='utf-8') as f:
                     alignment_data = json.load(f)
@@ -480,21 +479,11 @@ class LibriSpeechDataset(Dataset):
                 print(f"Warning: Failed to process alignment data for {base_name}: {e}")
         
         # If no valid alignment was found, raise an error instead of training on silence
-        if viseme_targets is None and not use_silence_aug:
+        if viseme_targets is None:
             raise RuntimeError(
                 f"Missing MFA alignment for sample {base_name} in {self.dataset_dir}. "
                 f"Run alignment (see run_mfa_alignment_prepared.sh) before training."
             )
-        elif use_silence_aug:
-            # Create pure-silence targets matching feature frames
-            num_frames = audio_features.shape[0]
-            num_classes = self.config.model.num_visemes
-            multi = bool(getattr(self.config.training, "multi_label", False))
-            if multi:
-                viseme_targets = torch.zeros(num_frames, num_classes, dtype=torch.float32)
-                viseme_targets[:, 0] = 1.0
-            else:
-                viseme_targets = torch.zeros(num_frames, dtype=torch.long)  # 0 == silence
         
         # Extract metadata from filename (format: speaker-chapter-utterance)
         parts = base_name.split('-')
@@ -517,6 +506,31 @@ class LibriSpeechDataset(Dataset):
             utterance_id=utterance_id,
             transcript=transcript,
             phoneme_targets=phoneme_targets
+        )
+
+    def _generate_synthetic_silence_sample(self) -> AudioSample:
+        """Create a synthetic near-silence AudioSample with targets set to silence"""
+        sr = self.config.audio.sample_rate
+        min_s, max_s = self.config.data.silence_chunk_length_s
+        waveform = self.audio_augment.synthesize_silence_or_near_silence(sr, min_s, max_s)
+        audio_features = self.audio_processor.waveform_to_mel_features(waveform, sr)
+        audio_features = self.audio_processor.normalize_features(audio_features)
+        num_frames = audio_features.shape[0]
+        num_classes = self.config.model.num_visemes
+        multi = bool(getattr(self.config.training, "multi_label", False))
+        if multi:
+            viseme_targets = torch.zeros(num_frames, num_classes, dtype=torch.float32)
+            viseme_targets[:, 0] = 1.0
+        else:
+            viseme_targets = torch.zeros(num_frames, dtype=torch.long)  # 0 == silence
+        duration_seconds = num_frames / self.config.audio.fps
+        return AudioSample(
+            audio_features=audio_features,
+            viseme_targets=viseme_targets,
+            sample_rate=sr,
+            duration_seconds=duration_seconds,
+            speaker_id="synthetic",
+            utterance_id="synthetic_silence",
         )
     
     def _process_alignment(self, alignment_data: Dict, target_frames: int) -> Tuple[torch.Tensor, torch.Tensor]:
