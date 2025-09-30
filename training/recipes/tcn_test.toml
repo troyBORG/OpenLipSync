@@ -192,7 +192,7 @@ gain_range = [0.8, 1.2]     # Randomly change volume by ±20%
 # But can slow training, so start without it
 
 # Synthetic silence/near-silence augmentation to reduce false activations on silence
-silence_augment_prob = 0.1          # 10% of samples replaced with near-silence noise chunks
+silence_augment_prob = 0.15         # ~15% extra synthetic near-silence items added
 silence_noise_dbfs_range = [-65.0, -40.0]  # Noise level for near-silence
 silence_chunk_length_s = [1.0, 4.0]       # Duration range for synthetic silence chunks
 
@@ -285,7 +285,7 @@ image_log_interval = 500        # Log images every N steps (if enabled)
 [experiment]
 # Experiment tracking - organize your training runs
 
-name = "audio_augmentation_full_dataset2"                              # Name for this experiment
+name = "audio_augmentation_full_dataset4"                              # Name for this experiment
 tags = ["tcn", "viseme", "100fps"]               # Tags to find related experiments
 notes = "TCN model test run with audio augmentation"  # Description of what you're testing
 

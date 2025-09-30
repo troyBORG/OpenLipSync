@@ -298,7 +298,7 @@ class TCNTrainer:
                 self.scheduler.step()
             
             # Update metrics (optionally apply cross-fade smoothing for metrics only)
-            preds_for_metrics = self._apply_viseme_crossfade(predictions)
+            preds_for_metrics = self._apply_viseme_crossfade(predictions).detach()
             self.train_metrics.update(preds_for_metrics, viseme_targets, sequence_lengths)
             total_train_loss += loss.item()
             num_batches += 1
@@ -381,7 +381,7 @@ class TCNTrainer:
                     loss = self.loss_function(predictions, viseme_targets, sequence_lengths)
                 
                 # Update metrics (optionally apply cross-fade smoothing for metrics only)
-                preds_for_metrics = self._apply_viseme_crossfade(predictions)
+                preds_for_metrics = self._apply_viseme_crossfade(predictions).detach()
                 self.val_metrics.update(preds_for_metrics, viseme_targets, sequence_lengths)
                 total_val_loss += loss.item()
                 num_batches += 1
