@@ -664,11 +664,32 @@ class CombinedLogger:
         # Log confusion matrix if available
         if 'confusion_matrix' in val_metrics:
             class_names = None
-            # Try to get class names from config
-            if hasattr(self.training_logger.config, 'phoneme_to_viseme_mapping'):
-                # Create class names from viseme mapping
+            # Build human-readable viseme names from mapping when available
+            try:
+                mapping = getattr(self.training_logger.config, 'phoneme_to_viseme_mapping', None)
+                num_classes = int(self.training_logger.config.model.num_visemes)
+                if isinstance(mapping, dict) and num_classes > 0:
+                    # Invert mapping: viseme_index -> list of phonemes
+                    viseme_to_phonemes = [[] for _ in range(num_classes)]
+                    for phoneme, vis_idx in mapping.items():
+                        if 0 <= int(vis_idx) < num_classes:
+                            viseme_to_phonemes[int(vis_idx)].append(str(phoneme))
+                    # Prefer a representative phoneme per viseme for labeling
+                    class_names = []
+                    for vidx in range(num_classes):
+                        if viseme_to_phonemes[vidx]:
+                            rep = viseme_to_phonemes[vidx][0]
+                            label = rep
+                        else:
+                            label = f"V{vidx}"
+                        # Shorten silence to sil
+                        if label.lower() in ("silence", "sil"):
+                            label = "sil"
+                        class_names.append(label)
+            except Exception:
+                # Fallback to generic labels if anything goes wrong
                 class_names = [f"V{i}" for i in range(self.training_logger.config.model.num_visemes)]
-            
+
             self.tensorboard_logger.log_confusion_matrix_immediate(
                 step, val_metrics['confusion_matrix'], class_names
             )
