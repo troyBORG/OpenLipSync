@@ -16,7 +16,7 @@ uv sync
 MFA (micromamba)
 
 ```bash
-micromamba create -n mfa -c conda-forge python=3.12 montreal-forced-aligner 
+micromamba create -n mfa -c conda-forge python=3.12 montreal-forced-aligner
 micromamba activate mfa
 
 mfa model download acoustic english_us_arpa
