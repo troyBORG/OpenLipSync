@@ -16,12 +16,18 @@ uv sync
 MFA (micromamba)
 
 ```bash
-micromamba create -n mfa -c conda-forge python=3.12 montreal-forced-aligner
+micromamba create -n mfa -c conda-forge python=3.12 montreal-forced-aligner 
 micromamba activate mfa
 
 mfa model download acoustic english_us_arpa
 mfa model download dictionary english_us_arpa
 mfa model download g2p english_us_arpa
+```
+
+Other dependencies needed before training:
+```bash
+pip install torch
+micromamba install -c pytorch torchaudio numpy scikit-learn tqdm tensorboard matplotlib
 ```
 
 Dataset Download is now integrated in the training script.
